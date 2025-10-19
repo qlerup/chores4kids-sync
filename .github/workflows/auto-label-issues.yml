@@ -1,0 +1,84 @@
+name: Auto-label issues (English only)
+
+on:
+  issues:
+    types: [opened, edited, reopened]
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - name: Label "bug" by English keywords
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const issue = context.payload.issue;
+            const number = issue.number;
+            const title = (issue.title || "").toLowerCase();
+            const body  = (issue.body  || "").toLowerCase();
+            const text = `${title}\n${body}`;
+
+            // ENGELSK-ONLY mønstre for bug-relaterede issues
+            const bugPatterns = [
+              /\bbug(s)?\b/i,
+              /\bcrash(es|ed|ing)?\b/i,
+              /\berror(s)?\b/i,
+              /\bexception(s)?\b/i,
+              /\b(stack\s*trace|stacktrace)\b/i,
+              /\btypeerror\b/i,
+              /\bnull\s*reference\b/i,
+              /\bundefined\b/i,
+              /\bnot\s*working\b/i,
+              /\bdoesn'?t\s*work\b/i,
+              /\bcannot\b/i,
+              /\bfail(ed|s|ing)?\b/i,
+              /\bbroken\b/i,
+              /\bregression(s)?\b/i
+            ];
+
+            const isBug = bugPatterns.some(rx => rx.test(text));
+            if (!isBug) {
+              core.info('No English bug keywords matched – no labels added.');
+              return;
+            }
+
+            // Sørg for at labelen findes
+            const label = { name: 'bug', color: 'd73a4a', description: 'Bug: errors, crashes, unexpected behavior' };
+
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: label.name
+              });
+            } catch (e) {
+              if (e.status === 404) {
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: label.name,
+                  color: label.color,
+                  description: label.description
+                });
+              } else {
+                throw e;
+              }
+            }
+
+            // Tilføj label hvis den ikke allerede er der
+            const existing = (issue.labels || []).map(l => typeof l === 'string' ? l : l.name);
+            if (!existing.includes(label.name)) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: number,
+                labels: [label.name]
+              });
+              core.info('Added label: bug');
+            } else {
+              core.info('Label already present.');
+            }
