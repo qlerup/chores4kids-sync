@@ -12,41 +12,52 @@ jobs:
     runs-on: ubuntu-latest
     env:
       INTEGRATION: chores4kids
+      HACS_ZIP: chores4kids.zip
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify integration exists
-        run: test -f custom_components/${{ env.INTEGRATION }}/manifest.json
+      - name: Verify required files exist
+        run: |
+          test -f custom_components/${{ env.INTEGRATION }}/manifest.json
+          test -f hacs.json
 
       - name: Extract version from tag
         id: ver
         run: |
           TAG="${{ github.event.release.tag_name }}"
-          echo "version=${TAG#v}" >> $GITHUB_OUTPUT
+          # strip leading "v" if present
+          VER="${TAG#v}"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
 
       - name: Update manifest.json with release version
         run: |
           jq --arg v "${{ steps.ver.outputs.version }}" '.version=$v' \
-            custom_components/${{ env.INTEGRATION }}/manifest.json \
+            "custom_components/${{ env.INTEGRATION }}/manifest.json" \
             > manifest.tmp
-          mv manifest.tmp custom_components/${{ env.INTEGRATION }}/manifest.json
+          mv manifest.tmp "custom_components/${{ env.INTEGRATION }}/manifest.json"
 
-      # (valgfrit) commit selve versionsbumpet til repoet
+      # (valgfrit) commit version bump til repoet
       # - uses: EndBug/add-and-commit@v9
       #   with:
       #     add: custom_components/${{ env.INTEGRATION }}/manifest.json
       #     message: "chore: bump manifest to ${{ steps.ver.outputs.version }}"
 
-      - name: Build HACS-compatible ZIP
+      - name: Build ZIPs for release (HACS + versioned)
         run: |
           mkdir -p dist
+          # Fast filnavn til HACS (skal matche hacs.json->filename)
+          zip -r "dist/${{ env.HACS_ZIP }}" "custom_components/${{ env.INTEGRATION }}" \
+            -x "**/__pycache__/*" "**/*.pyc" ".DS_Store" ".git/*"
+          # Versioneret zip som ekstra
           zip -r "dist/${{ env.INTEGRATION }}-${{ steps.ver.outputs.version }}.zip" \
             "custom_components/${{ env.INTEGRATION }}" \
             -x "**/__pycache__/*" "**/*.pyc" ".DS_Store" ".git/*"
 
-      - name: Upload asset to release
+      - name: Upload ZIP assets to release
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          files: dist/*.zip
+          files: |
+            dist/${{ env.HACS_ZIP }}
+            dist/${{ env.INTEGRATION }}-${{ steps.ver.outputs.version }}.zip
