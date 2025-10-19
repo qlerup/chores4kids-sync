@@ -4,6 +4,9 @@
 > **➡️ [https://github.com/qlerup/lovelace-chores4kids-card](https://github.com/qlerup/lovelace-chores4kids-card)**
 > The card provides the full interface. Without it, you’ll only have entities and services.
 
+<img width="1022" height="335" alt="image" src="https://github.com/user-attachments/assets/8aab466f-bac3-4989-adb2-5dafd10a362d" />
+
+
 The **Chores4Kids** integration is the data & sync engine. It persists **children**, **tasks**, **points**, and an optional **reward shop** as Home Assistant entities, and exposes services the Lovelace card calls. It’s local‑only and fast.
 
 ---
