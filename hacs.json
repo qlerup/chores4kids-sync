@@ -1,4 +1,5 @@
 {
   "name": "Chores4Kids Sync",
-  "render_readme": true
+  "render_readme": true,
+  "zip_release": true
 }
