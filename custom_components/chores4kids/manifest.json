@@ -1,5 +1,5 @@
 {
-  "domnain": "chores4kids",
+  "domain": "chores4kids",
   "name": "Chores4Kids Sync",
   "codeowners": ["@qlerup"],
   "config_flow": true,
