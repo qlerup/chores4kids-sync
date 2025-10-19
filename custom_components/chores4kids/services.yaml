@@ -1,0 +1,98 @@
+add_child:
+  fields:
+    name:
+      required: true
+      example: "Anna"
+rename_child:
+  fields:
+    child_id:
+      required: true
+    new_name:
+      required: true
+remove_child:
+  fields:
+    child_id:
+      required: true
+add_task:
+  fields:
+    title:
+      required: true
+    points:
+      required: true
+    description:
+      required: false
+    due:
+      required: false
+    icon:
+      required: false
+      description: "Optional icon id (e.g. mdi:vacuum)"
+    child_id:
+      required: false
+    repeat_days:
+      required: false
+      description: "List of days (mon..sun or 0=Mon..6=Sun) to auto-create the task"
+      example: ["mon","wed","fri"]
+    repeat_child_id:
+      required: false
+      description: "Child id that should be auto-assigned for the repeated task"
+assign_task:
+  fields:
+    task_id:
+      required: true
+    child_id:
+      required: true
+set_task_status:
+  fields:
+    task_id:
+      required: true
+    status:
+      required: true
+      selector:
+        select:
+          options:
+            - assigned
+            - in_progress
+            - awaiting_approval
+            - approved
+            - rejected
+delete_task:
+  fields:
+    task_id:
+      required: true
+approve_task:
+  fields:
+    task_id:
+      required: true
+set_task_repeat:
+  fields:
+    task_id:
+      required: true
+    repeat_days:
+      required: false
+    repeat_child_id:
+      required: false
+      description: "Child id to auto-assign on repeated days"
+
+set_task_icon:
+  name: Set task icon
+  description: Set or clear the icon for a task
+  fields:
+    task_id:
+      required: true
+    icon:
+      required: false
+      description: "Icon id (e.g. mdi:vacuum). Empty to clear"
+reset_points:
+  fields:
+    child_id:
+      required: false
+add_points:
+  fields:
+    child_id:
+      required: true
+    points:
+      required: true
+      example: 5
+purge_orphans:
+  name: Purge orphaned entities/devices
+  description: Fjerner forældreløse Chores4Kids entiteter og devices fra registry.
