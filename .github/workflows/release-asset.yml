@@ -45,19 +45,18 @@ jobs:
       - name: Build ZIPs for release (HACS + versioned)
         run: |
           mkdir -p dist
-          # Fast filnavn til HACS (skal matche hacs.json->filename)
-          zip -r "dist/${{ env.HACS_ZIP }}" "custom_components/${{ env.INTEGRATION }}" \
+          zip -r "dist/chores4kids.zip" "custom_components/chores4kids" \
             -x "**/__pycache__/*" "**/*.pyc" ".DS_Store" ".git/*"
-          # Versioneret zip som ekstra
-          zip -r "dist/${{ env.INTEGRATION }}-${{ steps.ver.outputs.version }}.zip" \
-            "custom_components/${{ env.INTEGRATION }}" \
+          zip -r "dist/chores4kids-${{ steps.ver.outputs.version }}.zip" \
+            "custom_components/chores4kids" \
             -x "**/__pycache__/*" "**/*.pyc" ".DS_Store" ".git/*"
-
+      
       - name: Upload ZIP assets to release
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           files: |
-            dist/${{ env.HACS_ZIP }}
-            dist/${{ env.INTEGRATION }}-${{ steps.ver.outputs.version }}.zip
+            dist/chores4kids.zip
+            dist/chores4kids-${{ steps.ver.outputs.version }}.zip
+      
