@@ -1,5 +1,6 @@
 {
   "name": "Chores4Kids Sync",
+  "render_readme": true,
   "zip_release": true,
   "filename": "chores4kids.zip"
 }
