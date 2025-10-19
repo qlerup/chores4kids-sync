@@ -119,6 +119,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await store.buy_shop_item(call.data["child_id"], call.data["item_id"])
         async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
 
+    async def svc_clear_shop_history(call: ServiceCall):
+        # Optional: clear for specific child_id
+        await store.clear_shop_history(call.data.get("child_id"))
+        async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
+
     hass.services.async_register(DOMAIN, "add_child", svc_add_child)
     hass.services.async_register(DOMAIN, "rename_child", svc_rename_child)
     hass.services.async_register(DOMAIN, "remove_child", svc_remove_child)
@@ -136,6 +141,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_register(DOMAIN, "update_shop_item", svc_update_shop_item)
     hass.services.async_register(DOMAIN, "delete_shop_item", svc_delete_shop_item)
     hass.services.async_register(DOMAIN, "buy_shop_item", svc_buy_shop_item)
+    hass.services.async_register(DOMAIN, "clear_shop_history", svc_clear_shop_history)
+    # Backwards/alias
+    hass.services.async_register(DOMAIN, "reset_shop_history", svc_clear_shop_history)
 
     # Upload images for shop items into /config/www/chores4kids
     async def svc_upload_shop_image(call: ServiceCall):
