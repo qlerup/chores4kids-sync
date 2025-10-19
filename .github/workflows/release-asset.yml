@@ -1,8 +1,12 @@
 name: Attach Integration ZIP to Release
-
 on:
   release:
     types: [published, prereleased]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to attach assets to (e.g. v1.0.0)'
+        required: false
 
 permissions:
   contents: write
@@ -16,47 +20,48 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify required files exist
+      - name: Determine tag
+        id: tag
         run: |
-          test -f custom_components/${{ env.INTEGRATION }}/manifest.json
-          test -f hacs.json
+          if [ -n "${{ github.event.release.tag_name }}" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${{ inputs.tag }}" >> $GITHUB_OUTPUT
+          fi
 
       - name: Extract version from tag
         id: ver
         run: |
-          TAG="${{ github.event.release.tag_name }}"
-          # strip leading "v" if present
-          VER="${TAG#v}"
-          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          TAG="${{ steps.tag.outputs.tag }}"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Update manifest.json with release version
+      - name: Bump manifest.json version
         run: |
           jq --arg v "${{ steps.ver.outputs.version }}" '.version=$v' \
-            "custom_components/${{ env.INTEGRATION }}/manifest.json" \
-            > manifest.tmp
-          mv manifest.tmp "custom_components/${{ env.INTEGRATION }}/manifest.json"
+            custom_components/${{ env.INTEGRATION }}/manifest.json > m.tmp
+          mv m.tmp custom_components/${{ env.INTEGRATION }}/manifest.json
 
-      # (valgfrit) commit version bump til repoet
-      # - uses: EndBug/add-and-commit@v9
-      #   with:
-      #     add: custom_components/${{ env.INTEGRATION }}/manifest.json
-      #     message: "chore: bump manifest to ${{ steps.ver.outputs.version }}"
-
-      - name: Build ZIPs for release (HACS + versioned)
+      - name: Build ZIPs (HACS + versioned)
         run: |
           mkdir -p dist
-          zip -r "dist/chores4kids.zip" "custom_components/chores4kids" \
+          zip -r "dist/${{ env.HACS_ZIP }}" "custom_components/${{ env.INTEGRATION }}" \
             -x "**/__pycache__/*" "**/*.pyc" ".DS_Store" ".git/*"
-          zip -r "dist/chores4kids-${{ steps.ver.outputs.version }}.zip" \
-            "custom_components/chores4kids" \
+          zip -r "dist/${{ env.INTEGRATION }}-${{ steps.ver.outputs.version }}.zip" \
+            "custom_components/${{ env.INTEGRATION }}" \
             -x "**/__pycache__/*" "**/*.pyc" ".DS_Store" ".git/*"
-      
-      - name: Upload ZIP assets to release
+
+      - name: Sanity check ZIP layout
+        run: |
+          unzip -l dist/${{ env.HACS_ZIP }} | awk '{print $4}' \
+          | grep -qx "custom_components/${{ env.INTEGRATION }}/manifest.json" \
+          || (echo "::error ::ZIP must contain custom_components/${{ env.INTEGRATION }}/manifest.json at root"; exit 1)
+
+      - name: Upload ZIP assets
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          tag_name: ${{ steps.tag.outputs.tag }}
           files: |
-            dist/chores4kids.zip
-            dist/chores4kids-${{ steps.ver.outputs.version }}.zip
-      
+            dist/${{ env.HACS_ZIP }}
+            dist/${{ env.INTEGRATION }}-${{ steps.ver.outputs.version }}.zip
