@@ -1,0 +1,10 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Opret Chores4Kids",
+        "description": "Tryk Indsend for at oprette integrationen."
+      }
+    }
+  }
+}
