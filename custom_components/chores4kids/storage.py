@@ -377,6 +377,16 @@ class KidsChoresStore:
             pass
         return pur
 
+    async def clear_shop_history(self, child_id: Optional[str] = None):
+        """Clear purchase history. If child_id is provided, clear only entries for that child."""
+        if child_id:
+            # Validate child exists; raises if missing
+            self._get_child(child_id)
+            self.purchases = [p for p in self.purchases if p.child_id != child_id]
+        else:
+            self.purchases = []
+        await self.async_save()
+
     # Helpers
     def _get_child(self, child_id: str) -> Child:
         for c in self.children:
