@@ -63,6 +63,25 @@ approve_task:
   fields:
     task_id:
       required: true
+update_task:
+  name: Update task fields
+  description: Update title, points, description, due or icon for a task
+  fields:
+    task_id:
+      required: true
+    title:
+      required: false
+      example: "Clean room"
+    points:
+      required: false
+      example: 10
+    description:
+      required: false
+    due:
+      required: false
+      description: ISO timestamp
+    icon:
+      required: false
 set_task_repeat:
   fields:
     task_id:
