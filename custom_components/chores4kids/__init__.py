@@ -71,6 +71,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await store.delete_task(call.data["task_id"])
         async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
 
+    async def svc_update_task(call: ServiceCall):
+        await store.update_task(
+            task_id=call.data["task_id"],
+            title=call.data.get("title"),
+            points=(int(call.data["points"]) if "points" in call.data else None),
+            description=call.data.get("description"),
+            due=call.data.get("due"),
+            icon=call.data.get("icon"),
+        )
+        async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
+
     async def svc_reset_points(call: ServiceCall):
         await store.reset_points(call.data.get("child_id"))
         async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
@@ -132,6 +143,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_register(DOMAIN, "set_task_status", svc_set_task_status)
     hass.services.async_register(DOMAIN, "approve_task", svc_approve_task)
     hass.services.async_register(DOMAIN, "delete_task", svc_delete_task)
+    hass.services.async_register(DOMAIN, "update_task", svc_update_task)
     hass.services.async_register(DOMAIN, "reset_points", svc_reset_points)
     hass.services.async_register(DOMAIN, "add_points", svc_add_points)
     hass.services.async_register(DOMAIN, "set_task_repeat", svc_set_task_repeat)
