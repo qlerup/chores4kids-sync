@@ -211,6 +211,36 @@ class KidsChoresStore:
         t.icon = (icon or "").strip()
         await self.async_save()
 
+    async def update_task(
+        self,
+        task_id: str,
+        title: Optional[str] = None,
+        points: Optional[int] = None,
+        description: Optional[str] = None,
+        due: Optional[str] = None,
+        icon: Optional[str] = None,
+    ):
+        """Update core editable fields on a task.
+
+        Note: Repeat settings are managed via set_task_repeat.
+        """
+        t = self._get_task(task_id)
+        if title is not None:
+            t.title = str(title).strip()
+        if points is not None:
+            try:
+                t.points = int(points)
+            except Exception:
+                # ignore invalid, keep previous value
+                pass
+        if description is not None:
+            t.description = str(description).strip()
+        if due is not None:
+            t.due = str(due).strip() or None
+        if icon is not None:
+            t.icon = str(icon).strip()
+        await self.async_save()
+
     async def daily_rollover(self):
         """Midnight housekeeping: start fresh each day.
 
