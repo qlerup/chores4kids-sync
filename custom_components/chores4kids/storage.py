@@ -46,7 +46,12 @@ class Task:
     icon: str = ""
     # Weekly repetition: 0=Mon .. 6=Sun (local time). If set, a fresh task is auto-created and assigned on those days.
     repeat_days: list[int] = field(default_factory=list)
+    # Backwards compat: previous versions supported only a single child
     repeat_child_id: Optional[str] = None
+    # New: allow multiple children for auto-assign on repeat days
+    repeat_child_ids: list[str] = field(default_factory=list)
+    # If true, carry the task forward to the next day until approved
+    persist_until_completed: bool = False
 
 class KidsChoresStore:
     def __init__(self, hass: HomeAssistant):
@@ -102,7 +107,7 @@ class KidsChoresStore:
         await self.async_save()
 
     # --- Tasks ---
-    async def add_task(self, title: str, points: int, description: str = "", due: Optional[str] = None, assigned_to: Optional[str] = None, repeat_days: Optional[list[int]|list[str]] = None, repeat_child_id: Optional[str] = None, icon: Optional[str] = None) -> Task:
+    async def add_task(self, title: str, points: int, description: str = "", due: Optional[str] = None, assigned_to: Optional[str] = None, repeat_days: Optional[list[int]|list[str]] = None, repeat_child_id: Optional[str] = None, repeat_child_ids: Optional[list[str]] = None, icon: Optional[str] = None, persist_until_completed: Optional[bool] = None) -> Task:
         tid = str(uuid4())
         # normalize repeat days to list[int]
         def _norm_days(days):
@@ -121,6 +126,8 @@ class KidsChoresStore:
         t = Task(id=tid, title=title.strip(), points=int(points), description=description.strip(), due=due, icon=(icon or "").strip())
         from datetime import datetime, timezone
         t.created = datetime.now(timezone.utc).isoformat()
+        if persist_until_completed is not None:
+            t.persist_until_completed = bool(persist_until_completed)
         # optional assignment at creation
         if assigned_to:
             # validate child
@@ -129,9 +136,29 @@ class KidsChoresStore:
             t.status = STATUS_ASSIGNED
         # optional repeat config
         t.repeat_days = _norm_days(repeat_days)
+        # Support multiple repeat children (and legacy single field)
+        ids: list[str] = []
+        try:
+            if repeat_child_ids:
+                for cid in repeat_child_ids:
+                    if not cid:
+                        continue
+                    self._get_child(cid)
+                    if cid not in ids:
+                        ids.append(cid)
+        except Exception:
+            # if any invalid id, ignore it (but keep others)
+            pass
         if repeat_child_id:
-            self._get_child(repeat_child_id)
-            t.repeat_child_id = repeat_child_id
+            # keep legacy field but also mirror into list if absent
+            try:
+                self._get_child(repeat_child_id)
+                t.repeat_child_id = repeat_child_id
+                if repeat_child_id not in ids:
+                    ids.append(repeat_child_id)
+            except Exception:
+                pass
+        t.repeat_child_ids = ids
         self.tasks.append(t)
         await self.async_save()
         return t
@@ -164,6 +191,11 @@ class KidsChoresStore:
             raise ValueError("invalid_status")
         t = self._get_task(task_id)
         t.status = status
+        # If a task is sent "back" to assigned, consider it (re)assigned today
+        # so it appears as a current task for the child, regardless of original day.
+        if status == STATUS_ASSIGNED:
+            from datetime import datetime, timezone
+            t.created = datetime.now(timezone.utc).isoformat()
         await self.async_save()
 
     async def approve_task(self, task_id: str):
@@ -184,7 +216,7 @@ class KidsChoresStore:
         self.tasks = [t for t in self.tasks if t.id != task_id]
         await self.async_save()
 
-    async def set_task_repeat(self, task_id: str, repeat_days: Optional[list[int]|list[str]] = None, repeat_child_id: Optional[str] = None):
+    async def set_task_repeat(self, task_id: str, repeat_days: Optional[list[int]|list[str]] = None, repeat_child_id: Optional[str] = None, repeat_child_ids: Optional[list[str]] = None):
         t = self._get_task(task_id)
         def _norm_days(days):
             if not days:
@@ -199,11 +231,30 @@ class KidsChoresStore:
                     if dd in key: out.append(key[dd])
             return sorted(set(out))
         t.repeat_days = _norm_days(repeat_days)
+        # normalize multi child ids
+        ids: list[str] = []
+        try:
+            for cid in (repeat_child_ids or []):
+                if not cid:
+                    continue
+                self._get_child(cid)
+                if cid not in ids:
+                    ids.append(cid)
+        except Exception:
+            pass
+        # keep legacy single field for backward compat
         if repeat_child_id:
-            self._get_child(repeat_child_id)
-            t.repeat_child_id = repeat_child_id
+            try:
+                self._get_child(repeat_child_id)
+                if repeat_child_id not in ids:
+                    ids.append(repeat_child_id)
+                t.repeat_child_id = repeat_child_id
+            except Exception:
+                # clear legacy if invalid
+                t.repeat_child_id = None
         else:
             t.repeat_child_id = None
+        t.repeat_child_ids = ids
         await self.async_save()
 
     async def set_task_icon(self, task_id: str, icon: Optional[str] = None):
@@ -219,6 +270,7 @@ class KidsChoresStore:
         description: Optional[str] = None,
         due: Optional[str] = None,
         icon: Optional[str] = None,
+        persist_until_completed: Optional[bool] = None,
     ):
         """Update core editable fields on a task.
 
@@ -239,6 +291,8 @@ class KidsChoresStore:
             t.due = str(due).strip() or None
         if icon is not None:
             t.icon = str(icon).strip()
+        if persist_until_completed is not None:
+            t.persist_until_completed = bool(persist_until_completed)
         await self.async_save()
 
     async def daily_rollover(self):
@@ -259,16 +313,24 @@ class KidsChoresStore:
         templates = []
         for t in self.tasks:
             if t.repeat_days:
+                # targets can be multiple children
+                targets = list(getattr(t, "repeat_child_ids", []) or [])
+                if not targets and getattr(t, "repeat_child_id", None):
+                    targets = [t.repeat_child_id]
                 templates.append({
                     "title": t.title,
                     "points": t.points,
                     "description": t.description,
                     "repeat_days": list(t.repeat_days),
                     "icon": t.icon,
-                    "target": t.repeat_child_id or t.assigned_to or None,
+                    "targets": [x for x in targets if x],
                 })
 
-        # 1) Remove all tasks from previous days (but NEVER remove unassigned template tasks)
+        # 1) Roll/clean older tasks with rules:
+        #    - NEVER remove unassigned template tasks (assigned_to is empty)
+        #    - KEEP tasks that are awaiting approval so parents can approve next day;
+        #      also refresh their created date to today so repeat planner won't duplicate.
+        #    - If persist_until_completed is true and task is not approved, KEEP and refresh created to today.
         kept: list[Task] = []
         for t in self.tasks:
             try:
@@ -277,7 +339,17 @@ class KidsChoresStore:
                     created = datetime.fromisoformat(t.created)
                 created_local = dt_util.as_local(created)
                 if created_local.date() < today and (t.assigned_to is not None and t.assigned_to != ""):
-                    continue  # drop any assigned task older than today; keep templates forever
+                    carry = False
+                    if t.status == STATUS_AWAITING:
+                        carry = True
+                    elif getattr(t, "persist_until_completed", False) and t.status != STATUS_APPROVED:
+                        carry = True
+                    if carry:
+                        # refresh created to today so exists_today() sees it
+                        from datetime import datetime as _dt, timezone as _tz
+                        t.created = _dt.now(_tz.utc).isoformat()
+                    else:
+                        continue  # drop non-persistent older tasks; keep templates forever
             except Exception:
                 pass
             kept.append(t)
@@ -300,9 +372,10 @@ class KidsChoresStore:
 
         for tpl in templates:
             if tpl["repeat_days"] and weekday in tpl["repeat_days"]:
-                target = tpl["target"]
-                if target and not exists_today(tpl["title"], target):
-                    await self.add_task(title=tpl["title"], points=tpl["points"], description=tpl["description"], assigned_to=target, icon=tpl.get("icon") or "")
+                targets = tpl.get("targets") or []
+                for target in targets:
+                    if target and not exists_today(tpl["title"], target):
+                        await self.add_task(title=tpl["title"], points=tpl["points"], description=tpl["description"], assigned_to=target, icon=tpl.get("icon") or "")
 
         await self.async_save()
 
