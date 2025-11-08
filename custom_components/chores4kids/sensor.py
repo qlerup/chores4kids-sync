@@ -200,7 +200,9 @@ class Chores4KidsAllTasksSensor(SensorEntity):
             "created": getattr(t, "created", None),
             "icon": getattr(t, "icon", None),
             "repeat_days": t.repeat_days,
-            "repeat_child_id": t.repeat_child_id,
+            "repeat_child_id": getattr(t, "repeat_child_id", None),
+            "repeat_child_ids": getattr(t, "repeat_child_ids", []),
+            "persist_until_completed": getattr(t, "persist_until_completed", False),
         } for t in self._store.tasks]
         return {"tasks": tasks}
 
