@@ -51,7 +51,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             assigned_to=call.data.get("child_id"),
             repeat_days=call.data.get("repeat_days"),
             repeat_child_id=call.data.get("repeat_child_id"),
+            repeat_child_ids=call.data.get("repeat_child_ids"),
             icon=call.data.get("icon"),
+            persist_until_completed=call.data.get("persist_until_completed"),
         )
         async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
 
@@ -79,6 +81,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             description=call.data.get("description"),
             due=call.data.get("due"),
             icon=call.data.get("icon"),
+            persist_until_completed=call.data.get("persist_until_completed"),
         )
         async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
 
@@ -91,7 +94,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
 
     async def svc_set_task_repeat(call: ServiceCall):
-        await store.set_task_repeat(call.data["task_id"], call.data.get("repeat_days"), call.data.get("repeat_child_id"))
+        await store.set_task_repeat(
+            call.data["task_id"],
+            call.data.get("repeat_days"),
+            call.data.get("repeat_child_id"),
+            call.data.get("repeat_child_ids"),
+        )
         async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
 
     async def svc_set_task_icon(call: ServiceCall):
