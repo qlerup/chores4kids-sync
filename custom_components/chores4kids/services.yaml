@@ -35,6 +35,9 @@ add_task:
     repeat_child_id:
       required: false
       description: "Child id that should be auto-assigned for the repeated task"
+    categories:
+      required: false
+      description: "List of category ids to attach to the task"
 assign_task:
   fields:
     task_id:
@@ -82,6 +85,9 @@ update_task:
       description: ISO timestamp
     icon:
       required: false
+    categories:
+      required: false
+      description: "List of category ids to set on the task"
 set_task_repeat:
   fields:
     task_id:
@@ -115,3 +121,24 @@ add_points:
 purge_orphans:
   name: Purge orphaned entities/devices
   description: Fjerner forældreløse Chores4Kids entiteter og devices fra registry.
+
+add_category:
+  name: Add category
+  fields:
+    name:
+      required: true
+      example: "Cleaning"
+
+rename_category:
+  name: Rename category
+  fields:
+    category_id:
+      required: true
+    new_name:
+      required: true
+
+delete_category:
+  name: Delete category
+  fields:
+    category_id:
+      required: true
