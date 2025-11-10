@@ -33,6 +33,11 @@ class Child:
     slug: str = ""
 
 @dataclass
+class Category:
+    id: str
+    name: str
+
+@dataclass
 class Task:
     id: str
     title: str
@@ -52,6 +57,8 @@ class Task:
     repeat_child_ids: list[str] = field(default_factory=list)
     # If true, carry the task forward to the next day until approved
     persist_until_completed: bool = False
+    # Categories (ids)
+    categories: list[str] = field(default_factory=list)
 
 class KidsChoresStore:
     def __init__(self, hass: HomeAssistant):
@@ -59,6 +66,7 @@ class KidsChoresStore:
         self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self.children: List[Child] = []
         self.tasks: List[Task] = []
+        self.categories: List[Category] = []
         self.items: List["ShopItem"] = []
         self.purchases: List["Purchase"] = []
 
@@ -67,6 +75,7 @@ class KidsChoresStore:
         if not data:
             return
         self.children = [Child(**c) for c in data.get("children", [])]
+        self.categories = [Category(**c) for c in data.get("categories", [])]
         self.tasks = [Task(**t) for t in data.get("tasks", [])]
         # Optional keys for backwards compatibility
         self.items = [ShopItem(**i) for i in data.get("items", [])]
@@ -77,6 +86,7 @@ class KidsChoresStore:
             "version": STORAGE_VERSION,
             "children": [asdict(c) for c in self.children],
             "tasks": [asdict(t) for t in self.tasks],
+            "categories": [asdict(c) for c in self.categories],
             "items": [asdict(i) for i in self.items],
             "purchases": [asdict(p) for p in self.purchases],
         })
@@ -107,7 +117,7 @@ class KidsChoresStore:
         await self.async_save()
 
     # --- Tasks ---
-    async def add_task(self, title: str, points: int, description: str = "", due: Optional[str] = None, assigned_to: Optional[str] = None, repeat_days: Optional[list[int]|list[str]] = None, repeat_child_id: Optional[str] = None, repeat_child_ids: Optional[list[str]] = None, icon: Optional[str] = None, persist_until_completed: Optional[bool] = None) -> Task:
+    async def add_task(self, title: str, points: int, description: str = "", due: Optional[str] = None, assigned_to: Optional[str] = None, repeat_days: Optional[list[int]|list[str]] = None, repeat_child_id: Optional[str] = None, repeat_child_ids: Optional[list[str]] = None, icon: Optional[str] = None, persist_until_completed: Optional[bool] = None, categories: Optional[list[str]] = None) -> Task:
         tid = str(uuid4())
         # normalize repeat days to list[int]
         def _norm_days(days):
@@ -159,6 +169,17 @@ class KidsChoresStore:
             except Exception:
                 pass
         t.repeat_child_ids = ids
+        # categories (validate against known list, ignore unknown)
+        try:
+            cat_ids: list[str] = []
+            for cid in (categories or []):
+                if any(c.id == cid for c in self.categories):
+                    if cid not in cat_ids:
+                        cat_ids.append(cid)
+            t.categories = cat_ids
+        except Exception:
+            t.categories = []
+
         self.tasks.append(t)
         await self.async_save()
         return t
@@ -178,6 +199,7 @@ class KidsChoresStore:
                 due=t.due,
                 assigned_to=child_id,
                 icon=t.icon,
+                categories=list(getattr(t, "categories", []) or []),
             )
             # add_task persists; nothing else to do
             return
@@ -271,6 +293,7 @@ class KidsChoresStore:
         due: Optional[str] = None,
         icon: Optional[str] = None,
         persist_until_completed: Optional[bool] = None,
+        categories: Optional[list[str]] = None,
     ):
         """Update core editable fields on a task.
 
@@ -293,6 +316,17 @@ class KidsChoresStore:
             t.icon = str(icon).strip()
         if persist_until_completed is not None:
             t.persist_until_completed = bool(persist_until_completed)
+        if categories is not None:
+            # set categories to validated list
+            new_ids: list[str] = []
+            try:
+                for cid in (categories or []):
+                    if any(c.id == cid for c in self.categories):
+                        if cid not in new_ids:
+                            new_ids.append(cid)
+            except Exception:
+                new_ids = []
+            t.categories = new_ids
         await self.async_save()
 
     async def daily_rollover(self):
@@ -323,6 +357,7 @@ class KidsChoresStore:
                     "description": t.description,
                     "repeat_days": list(t.repeat_days),
                     "icon": t.icon,
+                    "categories": list(getattr(t, "categories", []) or []),
                     "targets": [x for x in targets if x],
                 })
 
@@ -375,7 +410,7 @@ class KidsChoresStore:
                 targets = tpl.get("targets") or []
                 for target in targets:
                     if target and not exists_today(tpl["title"], target):
-                        await self.add_task(title=tpl["title"], points=tpl["points"], description=tpl["description"], assigned_to=target, icon=tpl.get("icon") or "")
+                        await self.add_task(title=tpl["title"], points=tpl["points"], description=tpl["description"], assigned_to=target, icon=tpl.get("icon") or "", categories=list(tpl.get("categories") or []))
 
         await self.async_save()
 
@@ -502,6 +537,37 @@ class KidsChoresStore:
             if t.id == task_id:
                 return t
         raise ValueError("task_not_found")
+
+    def _get_category(self, category_id: str) -> Category:
+        for cat in self.categories:
+            if cat.id == category_id:
+                return cat
+        raise ValueError("category_not_found")
+
+    # --- Categories ---
+    async def add_category(self, name: str) -> Category:
+        cid = str(uuid4())
+        cat = Category(id=cid, name=str(name).strip())
+        self.categories.append(cat)
+        await self.async_save()
+        return cat
+
+    async def rename_category(self, category_id: str, new_name: str) -> Category:
+        cat = self._get_category(category_id)
+        cat.name = str(new_name).strip()
+        await self.async_save()
+        return cat
+
+    async def delete_category(self, category_id: str):
+        # remove from tasks and from list
+        self.categories = [c for c in self.categories if c.id != category_id]
+        for t in self.tasks:
+            try:
+                if getattr(t, "categories", None):
+                    t.categories = [cid for cid in t.categories if cid != category_id]
+            except Exception:
+                pass
+        await self.async_save()
 
     # shop helpers
     def _get_item(self, item_id: str):
