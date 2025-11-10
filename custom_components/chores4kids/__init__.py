@@ -54,6 +54,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             repeat_child_ids=call.data.get("repeat_child_ids"),
             icon=call.data.get("icon"),
             persist_until_completed=call.data.get("persist_until_completed"),
+            categories=call.data.get("categories"),
         )
         async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
 
@@ -82,6 +83,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             due=call.data.get("due"),
             icon=call.data.get("icon"),
             persist_until_completed=call.data.get("persist_until_completed"),
+            categories=call.data.get("categories"),
         )
         async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
 
@@ -156,6 +158,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_register(DOMAIN, "add_points", svc_add_points)
     hass.services.async_register(DOMAIN, "set_task_repeat", svc_set_task_repeat)
     hass.services.async_register(DOMAIN, "set_task_icon", svc_set_task_icon)
+    # Categories
+    async def svc_add_category(call: ServiceCall):
+        await store.add_category(call.data["name"])
+        async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
+
+    async def svc_rename_category(call: ServiceCall):
+        await store.rename_category(call.data["category_id"], call.data["new_name"])
+        async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
+
+    async def svc_delete_category(call: ServiceCall):
+        await store.delete_category(call.data["category_id"])
+        async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
+
+    hass.services.async_register(DOMAIN, "add_category", svc_add_category)
+    hass.services.async_register(DOMAIN, "rename_category", svc_rename_category)
+    hass.services.async_register(DOMAIN, "delete_category", svc_delete_category)
     # Shop
     hass.services.async_register(DOMAIN, "add_shop_item", svc_add_shop_item)
     hass.services.async_register(DOMAIN, "update_shop_item", svc_update_shop_item)
