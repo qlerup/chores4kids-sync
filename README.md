@@ -15,6 +15,9 @@ The **Chores4Kids** integration is the data & sync engine. It persists **childre
 
 ### HACS (recommended)
 
+[![Open this repository in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=qlerup&repository=chores4kids-sync)
+
+
 1. In HACS → **Integrations** → **⋯ → Custom repositories** → add this repo URL as **Integration**.
 
 ```
