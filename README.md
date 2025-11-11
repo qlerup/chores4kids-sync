@@ -1,5 +1,7 @@
 # Chores4Kids — Home Assistant Integration (Sync Engine) 🧹👧👦
 
+[![hacs\_badge](https://img.shields.io/badge/HACS-Default-blue.svg)](https://hacs.xyz)
+
 > **Important:** This integration **requires** the matching Lovelace card (UI):
 > **➡️ [https://github.com/qlerup/lovelace-chores4kids-card](https://github.com/qlerup/lovelace-chores4kids-card)**
 > The card provides the full interface. Without it, you’ll only have entities and services.
