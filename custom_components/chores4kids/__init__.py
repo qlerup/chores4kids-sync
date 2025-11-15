@@ -63,7 +63,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
 
     async def svc_set_task_status(call: ServiceCall):
-        await store.set_task_status(call.data["task_id"], call.data["status"])
+        await store.set_task_status(
+            call.data["task_id"], 
+            call.data["status"],
+            call.data.get("completed_ts")
+        )
         async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
 
     async def svc_approve_task(call: ServiceCall):
@@ -206,6 +210,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
 
     hass.services.async_register(DOMAIN, 'upload_shop_image', svc_upload_shop_image)
+
+    async def svc_debug_mark_overdue(call: ServiceCall):
+        """DEBUG: Manually mark a task as overdue for testing."""
+        task_id = call.data["task_id"]
+        task = None
+        for t in store.tasks:
+            if t.id == task_id:
+                task = t
+                break
+        if task:
+            task.carried_over = True
+            await store.async_save()
+            async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
+
+    hass.services.async_register(DOMAIN, 'debug_mark_overdue', svc_debug_mark_overdue)
 
     async def svc_purge_orphans(call: ServiceCall):
         """Fjern forældreløse entiteter/devices fra tidligere versioner."""
