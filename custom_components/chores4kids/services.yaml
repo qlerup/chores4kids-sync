@@ -122,6 +122,14 @@ purge_orphans:
   name: Purge orphaned entities/devices
   description: Fjerner forældreløse Chores4Kids entiteter og devices fra registry.
 
+debug_mark_overdue:
+  name: "[DEBUG] Mark task as overdue"
+  description: "Manually mark a task as carried over (overdue) for testing purposes. This is a debug function."
+  fields:
+    task_id:
+      required: true
+      description: "ID of the task to mark as overdue"
+
 add_category:
   name: Add category
   fields:
