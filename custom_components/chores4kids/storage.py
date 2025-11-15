@@ -59,6 +59,10 @@ class Task:
     persist_until_completed: bool = False
     # Categories (ids)
     categories: list[str] = field(default_factory=list)
+    # Flag indicating task was carried over from previous day (for visual indication)
+    carried_over: bool = False
+    # Timestamp (milliseconds since epoch) when child marked task as completed
+    completed_ts: Optional[int] = None
 
 class KidsChoresStore:
     def __init__(self, hass: HomeAssistant):
@@ -199,6 +203,7 @@ class KidsChoresStore:
                 due=t.due,
                 assigned_to=child_id,
                 icon=t.icon,
+                persist_until_completed=getattr(t, "persist_until_completed", False),
                 categories=list(getattr(t, "categories", []) or []),
             )
             # add_task persists; nothing else to do
@@ -208,11 +213,17 @@ class KidsChoresStore:
         t.status = STATUS_ASSIGNED
         await self.async_save()
 
-    async def set_task_status(self, task_id: str, status: str):
+    async def set_task_status(self, task_id: str, status: str, completed_ts: Optional[int] = None):
         if status not in STATUSES:
             raise ValueError("invalid_status")
         t = self._get_task(task_id)
         t.status = status
+        # Store completion timestamp if provided
+        if completed_ts is not None:
+            t.completed_ts = completed_ts
+        # Clear timestamp if moving away from awaiting_approval
+        elif status != STATUS_AWAITING:
+            t.completed_ts = None
         # If a task is sent "back" to assigned, consider it (re)assigned today
         # so it appears as a current task for the child, regardless of original day.
         if status == STATUS_ASSIGNED:
@@ -231,6 +242,9 @@ class KidsChoresStore:
             pass
         t.status = STATUS_APPROVED
         t.approved_at = datetime.now(timezone.utc).isoformat()
+        # Clear carried_over flag when task is approved
+        t.carried_over = False
+        # Keep completed_ts for historical record (don't clear it)
         child.points += int(t.points)
         await self.async_save()
 
@@ -357,6 +371,7 @@ class KidsChoresStore:
                     "description": t.description,
                     "repeat_days": list(t.repeat_days),
                     "icon": t.icon,
+                    "persist_until_completed": getattr(t, "persist_until_completed", False),
                     "categories": list(getattr(t, "categories", []) or []),
                     "targets": [x for x in targets if x],
                 })
@@ -383,6 +398,8 @@ class KidsChoresStore:
                         # refresh created to today so exists_today() sees it
                         from datetime import datetime as _dt, timezone as _tz
                         t.created = _dt.now(_tz.utc).isoformat()
+                        # Mark as carried over for frontend visual indication
+                        t.carried_over = True
                     else:
                         continue  # drop non-persistent older tasks; keep templates forever
             except Exception:
@@ -410,7 +427,15 @@ class KidsChoresStore:
                 targets = tpl.get("targets") or []
                 for target in targets:
                     if target and not exists_today(tpl["title"], target):
-                        await self.add_task(title=tpl["title"], points=tpl["points"], description=tpl["description"], assigned_to=target, icon=tpl.get("icon") or "", categories=list(tpl.get("categories") or []))
+                        await self.add_task(
+                            title=tpl["title"],
+                            points=tpl["points"],
+                            description=tpl["description"],
+                            assigned_to=target,
+                            icon=tpl.get("icon") or "",
+                            persist_until_completed=tpl.get("persist_until_completed", False),
+                            categories=list(tpl.get("categories") or [])
+                        )
 
         await self.async_save()
 
