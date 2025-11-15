@@ -152,6 +152,7 @@ class KidsChoresPointsSensor(SensorEntity):
             "due": t.due,
             "icon": getattr(t, "icon", None),
             "categories": getattr(t, "categories", []),
+            "carried_over": getattr(t, "carried_over", False),
         } for t in tasks]
         return {
             "child_id": ch.id,
@@ -205,6 +206,7 @@ class Chores4KidsAllTasksSensor(SensorEntity):
             "repeat_child_ids": getattr(t, "repeat_child_ids", []),
             "persist_until_completed": getattr(t, "persist_until_completed", False),
             "categories": getattr(t, "categories", []),
+            "carried_over": getattr(t, "carried_over", False),
         } for t in self._store.tasks]
         categories = [{"id": cat.id, "name": cat.name} for cat in getattr(self._store, "categories", [])]
         return {"tasks": tasks, "categories": categories}
