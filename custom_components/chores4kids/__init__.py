@@ -48,12 +48,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             points=int(call.data["points"]),
             description=call.data.get("description", ""),
             due=call.data.get("due"),
+            early_bonus_enabled=call.data.get("early_bonus_enabled"),
+            early_bonus_days=call.data.get("early_bonus_days"),
+            early_bonus_points=call.data.get("early_bonus_points"),
             assigned_to=call.data.get("child_id"),
             repeat_days=call.data.get("repeat_days"),
             repeat_child_id=call.data.get("repeat_child_id"),
             repeat_child_ids=call.data.get("repeat_child_ids"),
             icon=call.data.get("icon"),
             persist_until_completed=call.data.get("persist_until_completed"),
+            quick_complete=call.data.get("quick_complete"),
+            skip_approval=call.data.get("skip_approval"),
             categories=call.data.get("categories"),
         )
         async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
@@ -85,8 +90,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             points=(int(call.data["points"]) if "points" in call.data else None),
             description=call.data.get("description"),
             due=call.data.get("due"),
+            early_bonus_enabled=call.data.get("early_bonus_enabled"),
+            early_bonus_days=call.data.get("early_bonus_days"),
+            early_bonus_points=call.data.get("early_bonus_points"),
             icon=call.data.get("icon"),
             persist_until_completed=call.data.get("persist_until_completed"),
+            quick_complete=call.data.get("quick_complete"),
+            skip_approval=call.data.get("skip_approval"),
             categories=call.data.get("categories"),
         )
         async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
