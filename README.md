@@ -2,6 +2,10 @@
 
 [![hacs\_badge](https://img.shields.io/badge/HACS-Default-blue.svg)](https://hacs.xyz)
 
+If you find this project useful, you can support me on Ko-fi 💙  
+
+[![Buy me some debugging time on Ko-fi](https://img.shields.io/badge/%F0%9F%90%9E_Buy_me_some_debugging_time_on-Ko--fi-2ea44f?style=for-the-badge)](https://ko-fi.com/qlerup)
+
 > **Important:** This integration **requires** the matching Lovelace card (UI):
 > **➡️ [https://github.com/qlerup/lovelace-chores4kids-card](https://github.com/qlerup/lovelace-chores4kids-card)**
 > The card provides the full interface. Without it, you’ll only have entities and services.
