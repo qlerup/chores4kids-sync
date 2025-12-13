@@ -51,18 +51,29 @@ class Task:
     icon: str = ""
     # Weekly repetition: 0=Mon .. 6=Sun (local time). If set, a fresh task is auto-created and assigned on those days.
     repeat_days: list[int] = field(default_factory=list)
+    # If set, this task is an instance spawned from the unassigned repeat template task with this id.
+    repeat_template_id: Optional[str] = None
     # Backwards compat: previous versions supported only a single child
     repeat_child_id: Optional[str] = None
     # New: allow multiple children for auto-assign on repeat days
     repeat_child_ids: list[str] = field(default_factory=list)
     # If true, carry the task forward to the next day until approved
     persist_until_completed: bool = False
+    # If true, child can mark task done immediately (skip "start" step)
+    quick_complete: bool = False
+    # If true, task is automatically approved when completed (skip parent approval)
+    skip_approval: bool = False
     # Categories (ids)
     categories: list[str] = field(default_factory=list)
     # Flag indicating task was carried over from previous day (for visual indication)
     carried_over: bool = False
     # Timestamp (milliseconds since epoch) when child marked task as completed
     completed_ts: Optional[int] = None
+    # Early completion bonus: if completed at least N days before due date, award extra points
+    # early_bonus_enabled allows toggling without losing configured values
+    early_bonus_enabled: bool = False
+    early_bonus_days: int = 0
+    early_bonus_points: int = 0
 
 class KidsChoresStore:
     def __init__(self, hass: HomeAssistant):
@@ -80,7 +91,21 @@ class KidsChoresStore:
             return
         self.children = [Child(**c) for c in data.get("children", [])]
         self.categories = [Category(**c) for c in data.get("categories", [])]
-        self.tasks = [Task(**t) for t in data.get("tasks", [])]
+        # Migrate tasks: if early bonus was configured before the explicit toggle existed,
+        # enable it automatically so behavior remains unchanged.
+        raw_tasks = list(data.get("tasks", []) or [])
+        migrated: list[Task] = []
+        for t in raw_tasks:
+            try:
+                if isinstance(t, dict) and "early_bonus_enabled" not in t:
+                    eb_days = int(t.get("early_bonus_days", 0) or 0)
+                    eb_points = int(t.get("early_bonus_points", 0) or 0)
+                    t["early_bonus_enabled"] = bool(eb_days > 0 and eb_points > 0)
+            except Exception:
+                # Best-effort migration; fall back to dataclass defaults
+                pass
+            migrated.append(Task(**t))
+        self.tasks = migrated
         # Optional keys for backwards compatibility
         self.items = [ShopItem(**i) for i in data.get("items", [])]
         self.purchases = [Purchase(**p) for p in data.get("purchases", [])]
@@ -121,7 +146,26 @@ class KidsChoresStore:
         await self.async_save()
 
     # --- Tasks ---
-    async def add_task(self, title: str, points: int, description: str = "", due: Optional[str] = None, assigned_to: Optional[str] = None, repeat_days: Optional[list[int]|list[str]] = None, repeat_child_id: Optional[str] = None, repeat_child_ids: Optional[list[str]] = None, icon: Optional[str] = None, persist_until_completed: Optional[bool] = None, categories: Optional[list[str]] = None) -> Task:
+    async def add_task(
+        self,
+        title: str,
+        points: int,
+        description: str = "",
+        due: Optional[str] = None,
+        assigned_to: Optional[str] = None,
+        repeat_days: Optional[list[int] | list[str]] = None,
+        repeat_child_id: Optional[str] = None,
+        repeat_child_ids: Optional[list[str]] = None,
+        repeat_template_id: Optional[str] = None,
+        icon: Optional[str] = None,
+        persist_until_completed: Optional[bool] = None,
+        quick_complete: Optional[bool] = None,
+        skip_approval: Optional[bool] = None,
+        categories: Optional[list[str]] = None,
+        early_bonus_enabled: Optional[bool] = None,
+        early_bonus_days: Optional[int] = None,
+        early_bonus_points: Optional[int] = None,
+    ) -> Task:
         tid = str(uuid4())
         # normalize repeat days to list[int]
         def _norm_days(days):
@@ -137,11 +181,42 @@ class KidsChoresStore:
                     if dd in key: out.append(key[dd])
             return sorted(set(out))
 
-        t = Task(id=tid, title=title.strip(), points=int(points), description=description.strip(), due=due, icon=(icon or "").strip())
+        t = Task(
+            id=tid,
+            title=title.strip(),
+            points=int(points),
+            description=description.strip(),
+            due=due,
+            icon=(icon or "").strip(),
+            repeat_template_id=(repeat_template_id or None),
+        )
         from datetime import datetime, timezone
         t.created = datetime.now(timezone.utc).isoformat()
+
+        if early_bonus_enabled is not None:
+            t.early_bonus_enabled = bool(early_bonus_enabled)
+        if early_bonus_days is not None:
+            try:
+                t.early_bonus_days = max(0, int(early_bonus_days))
+            except Exception:
+                t.early_bonus_days = 0
+        if early_bonus_points is not None:
+            try:
+                t.early_bonus_points = max(0, int(early_bonus_points))
+            except Exception:
+                t.early_bonus_points = 0
+        # Backwards compat: if caller sets days+points but doesn't pass explicit toggle, auto-enable.
+        if early_bonus_enabled is None:
+            try:
+                t.early_bonus_enabled = bool(int(getattr(t, "early_bonus_days", 0) or 0) > 0 and int(getattr(t, "early_bonus_points", 0) or 0) > 0)
+            except Exception:
+                t.early_bonus_enabled = False
         if persist_until_completed is not None:
             t.persist_until_completed = bool(persist_until_completed)
+        if quick_complete is not None:
+            t.quick_complete = bool(quick_complete)
+        if skip_approval is not None:
+            t.skip_approval = bool(skip_approval)
         # optional assignment at creation
         if assigned_to:
             # validate child
@@ -185,8 +260,119 @@ class KidsChoresStore:
             t.categories = []
 
         self.tasks.append(t)
+
+        # If this is an unassigned repeat template with early-bonus enabled, create upcoming
+        # assigned instance(s) immediately, using repeat_days as the deadline.
+        try:
+            await self._maybe_spawn_repeat_bonus_instances(t)
+        except Exception:
+            pass
+
         await self.async_save()
         return t
+
+    def _repeat_bonus_active(self, t: Task) -> bool:
+        try:
+            return bool(getattr(t, "early_bonus_enabled", False)) and int(getattr(t, "early_bonus_days", 0) or 0) > 0 and int(getattr(t, "early_bonus_points", 0) or 0) > 0
+        except Exception:
+            return False
+
+    def _repeat_targets_for_template(self, t: Task) -> list[str]:
+        targets: list[str] = []
+        try:
+            for cid in (getattr(t, "repeat_child_ids", []) or []):
+                if cid and cid not in targets:
+                    targets.append(cid)
+        except Exception:
+            pass
+        try:
+            cid = getattr(t, "repeat_child_id", None)
+            if cid and cid not in targets:
+                targets.append(cid)
+        except Exception:
+            pass
+        return targets
+
+    def _active_repeat_instance_exists(self, template_id: str, child_id: str) -> bool:
+        for x in self.tasks:
+            if x.assigned_to != child_id:
+                continue
+            if getattr(x, "repeat_template_id", None) != template_id:
+                continue
+            if x.status in (STATUS_ASSIGNED, STATUS_IN_PROGRESS, STATUS_AWAITING):
+                return True
+        return False
+
+    def _next_repeat_due_iso(self, base_date, repeat_days: list[int], include_today: bool = True) -> Optional[str]:
+        try:
+            from datetime import timedelta
+            if not repeat_days:
+                return None
+            wd = int(base_date.weekday())
+            best = None
+            for d in sorted(set(int(x) for x in repeat_days if 0 <= int(x) <= 6)):
+                delta = (d - wd) % 7
+                if not include_today and delta == 0:
+                    delta = 7
+                if best is None or delta < best:
+                    best = delta
+            if best is None:
+                return None
+            return (base_date + timedelta(days=int(best))).isoformat()
+        except Exception:
+            return None
+
+    async def _maybe_spawn_repeat_bonus_instances(self, template: Task):
+        """For repeat templates with early-bonus enabled, ensure each target child has one upcoming instance.
+
+        Deadline is derived from template.repeat_days (next occurrence), not from template.due.
+        """
+        # Only for unassigned templates
+        if template.assigned_to:
+            return
+        if not getattr(template, "repeat_days", None):
+            return
+        if not self._repeat_bonus_active(template):
+            return
+        targets = self._repeat_targets_for_template(template)
+        if not targets:
+            return
+
+        from homeassistant.util import dt as dt_util
+        from datetime import datetime, timezone
+        today = dt_util.now().date()  # local
+        due_iso = self._next_repeat_due_iso(today, list(template.repeat_days), include_today=True)
+        if not due_iso:
+            return
+
+        for cid in targets:
+            try:
+                self._get_child(cid)
+            except Exception:
+                continue
+            if self._active_repeat_instance_exists(template.id, cid):
+                continue
+
+            inst = Task(
+                id=str(uuid4()),
+                title=template.title,
+                points=int(template.points),
+                assigned_to=cid,
+                status=STATUS_ASSIGNED,
+                description=getattr(template, "description", "") or "",
+                created=datetime.now(timezone.utc).isoformat(),
+                due=due_iso,
+                icon=getattr(template, "icon", "") or "",
+                repeat_template_id=template.id,
+                persist_until_completed=True,
+                quick_complete=bool(getattr(template, "quick_complete", False)),
+                skip_approval=bool(getattr(template, "skip_approval", False)),
+                categories=list(getattr(template, "categories", []) or []),
+            )
+            inst.early_bonus_enabled = bool(getattr(template, "early_bonus_enabled", False))
+            inst.early_bonus_days = int(getattr(template, "early_bonus_days", 0) or 0)
+            inst.early_bonus_points = int(getattr(template, "early_bonus_points", 0) or 0)
+            self.tasks.append(inst)
 
     async def assign_task(self, task_id: str, child_id: str):
         t = self._get_task(task_id)
@@ -204,7 +390,12 @@ class KidsChoresStore:
                 assigned_to=child_id,
                 icon=t.icon,
                 persist_until_completed=getattr(t, "persist_until_completed", False),
+                quick_complete=getattr(t, "quick_complete", False),
+                skip_approval=getattr(t, "skip_approval", False),
                 categories=list(getattr(t, "categories", []) or []),
+                early_bonus_enabled=getattr(t, "early_bonus_enabled", False),
+                early_bonus_days=getattr(t, "early_bonus_days", 0),
+                early_bonus_points=getattr(t, "early_bonus_points", 0),
             )
             # add_task persists; nothing else to do
             return
@@ -217,12 +408,23 @@ class KidsChoresStore:
         if status not in STATUSES:
             raise ValueError("invalid_status")
         t = self._get_task(task_id)
-        t.status = status
         # Store completion timestamp if provided
         if completed_ts is not None:
             t.completed_ts = completed_ts
-        # Clear timestamp if moving away from awaiting_approval
-        elif status != STATUS_AWAITING:
+
+        # If the task is configured to skip approval, auto-approve when it would
+        # normally be sent for parent approval.
+        if status == STATUS_AWAITING and getattr(t, "skip_approval", False):
+            # Set status to awaiting first (approve_task allows other states too,
+            # but this keeps the flow consistent with UI expectations).
+            t.status = STATUS_AWAITING
+            await self.approve_task(task_id)
+            return
+
+        t.status = status
+        # Clear timestamp if moving away from awaiting_approval and caller didn't
+        # provide a completion timestamp.
+        if completed_ts is None and status != STATUS_AWAITING:
             t.completed_ts = None
         # If a task is sent "back" to assigned, consider it (re)assigned today
         # so it appears as a current task for the child, regardless of original day.
@@ -245,28 +447,123 @@ class KidsChoresStore:
         # Clear carried_over flag when task is approved
         t.carried_over = False
         # Keep completed_ts for historical record (don't clear it)
-        child.points += int(t.points)
+        bonus = 0
+        try:
+            eb_enabled = bool(getattr(t, "early_bonus_enabled", False))
+            eb_days = int(getattr(t, "early_bonus_days", 0) or 0)
+            eb_points = int(getattr(t, "early_bonus_points", 0) or 0)
+            due_raw = getattr(t, "due", None)
+            comp_ts = getattr(t, "completed_ts", None)
+
+            if eb_enabled and eb_days > 0 and eb_points > 0 and due_raw and comp_ts:
+                from datetime import timedelta
+                from homeassistant.util import dt as dt_util
+
+                # Parse due as datetime or date (YYYY-MM-DD)
+                due_dt = dt_util.parse_datetime(str(due_raw))
+                due_date = None
+                if due_dt is not None:
+                    due_date = dt_util.as_local(due_dt).date()
+                else:
+                    due_d = dt_util.parse_date(str(due_raw))
+                    if due_d is not None:
+                        due_date = due_d
+
+                if due_date is not None:
+                    completed_dt = dt_util.as_local(dt_util.utc_from_timestamp(int(comp_ts) / 1000.0))
+                    completed_date = completed_dt.date()
+                    threshold_date = due_date - timedelta(days=eb_days)
+                    if completed_date <= threshold_date:
+                        bonus = eb_points
+        except Exception:
+            bonus = 0
+
+        child.points += int(t.points) + int(bonus)
+
+        # If this task was spawned from a repeat template, create the next upcoming instance
+        # right away (so the child card shows the next deadline without waiting for midnight).
+        try:
+            tpl_id = getattr(t, "repeat_template_id", None)
+            if tpl_id and t.assigned_to:
+                template = None
+                for x in self.tasks:
+                    if x.id == tpl_id and (not x.assigned_to):
+                        template = x
+                        break
+                if template and getattr(template, "repeat_days", None) and self._repeat_bonus_active(template):
+                    from homeassistant.util import dt as dt_util
+                    from datetime import datetime as _dt, timezone as _tz
+                    # Advance based on the instance deadline (t.due), not "today", so multi-weekday
+                    # schedules chain correctly.
+                    base = dt_util.now().date()
+                    try:
+                        due_raw = getattr(t, "due", None)
+                        if due_raw:
+                            due_dt = dt_util.parse_datetime(str(due_raw))
+                            if due_dt is not None:
+                                base = dt_util.as_local(due_dt).date()
+                            else:
+                                due_d = dt_util.parse_date(str(due_raw))
+                                if due_d is not None:
+                                    base = due_d
+                    except Exception:
+                        base = dt_util.now().date()
+                    next_due = self._next_repeat_due_iso(base, list(template.repeat_days), include_today=False)
+                    if next_due and not self._active_repeat_instance_exists(template.id, t.assigned_to):
+                        inst = Task(
+                            id=str(uuid4()),
+                            title=template.title,
+                            points=int(template.points),
+                            assigned_to=t.assigned_to,
+                            status=STATUS_ASSIGNED,
+                            description=getattr(template, "description", "") or "",
+                            created=_dt.now(_tz.utc).isoformat(),
+                            due=next_due,
+                            icon=getattr(template, "icon", "") or "",
+                            repeat_template_id=template.id,
+                            persist_until_completed=True,
+                            quick_complete=bool(getattr(template, "quick_complete", False)),
+                            skip_approval=bool(getattr(template, "skip_approval", False)),
+                            categories=list(getattr(template, "categories", []) or []),
+                        )
+                        inst.early_bonus_enabled = bool(getattr(template, "early_bonus_enabled", False))
+                        inst.early_bonus_days = int(getattr(template, "early_bonus_days", 0) or 0)
+                        inst.early_bonus_points = int(getattr(template, "early_bonus_points", 0) or 0)
+                        self.tasks.append(inst)
+        except Exception:
+            pass
         await self.async_save()
 
     async def delete_task(self, task_id: str):
         self.tasks = [t for t in self.tasks if t.id != task_id]
         await self.async_save()
 
-    async def set_task_repeat(self, task_id: str, repeat_days: Optional[list[int]|list[str]] = None, repeat_child_id: Optional[str] = None, repeat_child_ids: Optional[list[str]] = None):
+    async def set_task_repeat(
+        self,
+        task_id: str,
+        repeat_days: Optional[list[int] | list[str]] = None,
+        repeat_child_id: Optional[str] = None,
+        repeat_child_ids: Optional[list[str]] = None,
+    ):
         t = self._get_task(task_id)
+
         def _norm_days(days):
             if not days:
                 return []
-            key = {"mon":0,"tue":1,"wed":2,"thu":3,"fri":4,"sat":5,"sun":6}
+            key = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
             out = []
             for d in days:
                 if isinstance(d, int):
-                    if 0 <= d <= 6: out.append(int(d))
+                    if 0 <= d <= 6:
+                        out.append(int(d))
                 else:
                     dd = str(d).strip().lower()[:3]
-                    if dd in key: out.append(key[dd])
+                    if dd in key:
+                        out.append(key[dd])
             return sorted(set(out))
+
         t.repeat_days = _norm_days(repeat_days)
+
         # normalize multi child ids
         ids: list[str] = []
         try:
@@ -278,6 +575,7 @@ class KidsChoresStore:
                     ids.append(cid)
         except Exception:
             pass
+
         # keep legacy single field for backward compat
         if repeat_child_id:
             try:
@@ -290,7 +588,14 @@ class KidsChoresStore:
                 t.repeat_child_id = None
         else:
             t.repeat_child_id = None
+
         t.repeat_child_ids = ids
+
+        # If this is a template and early-bonus repeat is active, ensure instances exist.
+        try:
+            await self._maybe_spawn_repeat_bonus_instances(t)
+        except Exception:
+            pass
         await self.async_save()
 
     async def set_task_icon(self, task_id: str, icon: Optional[str] = None):
@@ -305,8 +610,13 @@ class KidsChoresStore:
         points: Optional[int] = None,
         description: Optional[str] = None,
         due: Optional[str] = None,
+        early_bonus_enabled: Optional[bool] = None,
+        early_bonus_days: Optional[int] = None,
+        early_bonus_points: Optional[int] = None,
         icon: Optional[str] = None,
         persist_until_completed: Optional[bool] = None,
+        quick_complete: Optional[bool] = None,
+        skip_approval: Optional[bool] = None,
         categories: Optional[list[str]] = None,
     ):
         """Update core editable fields on a task.
@@ -326,10 +636,26 @@ class KidsChoresStore:
             t.description = str(description).strip()
         if due is not None:
             t.due = str(due).strip() or None
+        if early_bonus_enabled is not None:
+            t.early_bonus_enabled = bool(early_bonus_enabled)
+        if early_bonus_days is not None:
+            try:
+                t.early_bonus_days = max(0, int(early_bonus_days))
+            except Exception:
+                t.early_bonus_days = getattr(t, "early_bonus_days", 0) or 0
+        if early_bonus_points is not None:
+            try:
+                t.early_bonus_points = max(0, int(early_bonus_points))
+            except Exception:
+                t.early_bonus_points = getattr(t, "early_bonus_points", 0) or 0
         if icon is not None:
             t.icon = str(icon).strip()
         if persist_until_completed is not None:
             t.persist_until_completed = bool(persist_until_completed)
+        if quick_complete is not None:
+            t.quick_complete = bool(quick_complete)
+        if skip_approval is not None:
+            t.skip_approval = bool(skip_approval)
         if categories is not None:
             # set categories to validated list
             new_ids: list[str] = []
@@ -341,6 +667,12 @@ class KidsChoresStore:
             except Exception:
                 new_ids = []
             t.categories = new_ids
+
+        # If this is a template and early-bonus repeat is active, ensure instances exist.
+        try:
+            await self._maybe_spawn_repeat_bonus_instances(t)
+        except Exception:
+            pass
         await self.async_save()
 
     async def daily_rollover(self):
@@ -366,12 +698,19 @@ class KidsChoresStore:
                 if not targets and getattr(t, "repeat_child_id", None):
                     targets = [t.repeat_child_id]
                 templates.append({
+                    "id": t.id,
                     "title": t.title,
                     "points": t.points,
                     "description": t.description,
                     "repeat_days": list(t.repeat_days),
                     "icon": t.icon,
+                    "due": getattr(t, "due", None),
+                    "early_bonus_enabled": getattr(t, "early_bonus_enabled", False),
+                    "early_bonus_days": getattr(t, "early_bonus_days", 0),
+                    "early_bonus_points": getattr(t, "early_bonus_points", 0),
                     "persist_until_completed": getattr(t, "persist_until_completed", False),
+                    "quick_complete": getattr(t, "quick_complete", False),
+                    "skip_approval": getattr(t, "skip_approval", False),
                     "categories": list(getattr(t, "categories", []) or []),
                     "targets": [x for x in targets if x],
                 })
@@ -423,8 +762,42 @@ class KidsChoresStore:
             return False
 
         for tpl in templates:
-            if tpl["repeat_days"] and weekday in tpl["repeat_days"]:
-                targets = tpl.get("targets") or []
+            rdays = tpl.get("repeat_days") or []
+            if not rdays:
+                continue
+            targets = tpl.get("targets") or []
+
+            is_bonus_repeat = bool(tpl.get("early_bonus_enabled")) and int(tpl.get("early_bonus_days", 0) or 0) > 0 and int(tpl.get("early_bonus_points", 0) or 0) > 0
+            if is_bonus_repeat:
+                # Ignore any fixed date in tpl['due']; deadline is the next repeat weekday.
+                tpl_id = str(tpl.get("id") or "")
+                due_iso = self._next_repeat_due_iso(today, list(rdays), include_today=True)
+                if tpl_id and due_iso:
+                    for target in targets:
+                        if not target:
+                            continue
+                        if self._active_repeat_instance_exists(tpl_id, target):
+                            continue
+                        await self.add_task(
+                            title=tpl["title"],
+                            points=tpl["points"],
+                            description=tpl["description"],
+                            assigned_to=target,
+                            icon=tpl.get("icon") or "",
+                            due=due_iso,
+                            repeat_template_id=tpl_id,
+                            early_bonus_enabled=True,
+                            early_bonus_days=int(tpl.get("early_bonus_days", 0) or 0),
+                            early_bonus_points=int(tpl.get("early_bonus_points", 0) or 0),
+                            persist_until_completed=True,
+                            quick_complete=tpl.get("quick_complete", False),
+                            skip_approval=tpl.get("skip_approval", False),
+                            categories=list(tpl.get("categories") or [])
+                        )
+                continue
+
+            # Legacy repeat behavior: create only on the selected weekday.
+            if weekday in rdays:
                 for target in targets:
                     if target and not exists_today(tpl["title"], target):
                         await self.add_task(
@@ -433,7 +806,13 @@ class KidsChoresStore:
                             description=tpl["description"],
                             assigned_to=target,
                             icon=tpl.get("icon") or "",
+                            due=tpl.get("due"),
+                            early_bonus_enabled=tpl.get("early_bonus_enabled"),
+                            early_bonus_days=tpl.get("early_bonus_days"),
+                            early_bonus_points=tpl.get("early_bonus_points"),
                             persist_until_completed=tpl.get("persist_until_completed", False),
+                            quick_complete=tpl.get("quick_complete", False),
+                            skip_approval=tpl.get("skip_approval", False),
                             categories=list(tpl.get("categories") or [])
                         )
 
