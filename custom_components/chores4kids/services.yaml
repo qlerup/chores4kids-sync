@@ -23,9 +23,28 @@ add_task:
       required: false
     due:
       required: false
+      description: "Deadline as YYYY-MM-DD or ISO timestamp"
+    early_bonus_enabled:
+      required: false
+      description: "Enable/disable early completion bonus without clearing configured values"
+      example: true
+    early_bonus_days:
+      required: false
+      description: "If completed at least N days before due date, award bonus points"
+      example: 2
+    early_bonus_points:
+      required: false
+      description: "Bonus points awarded when early_bonus_days condition is met"
+      example: 10
     icon:
       required: false
       description: "Optional icon id (e.g. mdi:vacuum)"
+    quick_complete:
+      required: false
+      description: "If true, child can mark task done immediately (skip start step)"
+    skip_approval:
+      required: false
+      description: "If true, task is auto-approved when completed (skip parent approval)"
     child_id:
       required: false
     repeat_days:
@@ -82,9 +101,27 @@ update_task:
       required: false
     due:
       required: false
-      description: ISO timestamp
+      description: "Deadline as YYYY-MM-DD or ISO timestamp"
+    early_bonus_enabled:
+      required: false
+      description: "Enable/disable early completion bonus without clearing configured values"
+      example: true
+    early_bonus_days:
+      required: false
+      description: "If completed at least N days before due date, award bonus points"
+      example: 2
+    early_bonus_points:
+      required: false
+      description: "Bonus points awarded when early_bonus_days condition is met"
+      example: 10
     icon:
       required: false
+    quick_complete:
+      required: false
+      description: "If true, child can mark task done immediately (skip start step)"
+    skip_approval:
+      required: false
+      description: "If true, task is auto-approved when completed (skip parent approval)"
     categories:
       required: false
       description: "List of category ids to set on the task"
