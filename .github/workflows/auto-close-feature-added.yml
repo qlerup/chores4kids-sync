@@ -1,0 +1,59 @@
+name: Close issue when feature is added
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  close-on-feature-added:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - name: Close issue on "Feature added" label
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const issue = context.payload.issue;
+            const appliedLabel = context.payload.label?.name || "";
+
+            // Only issues, not PRs
+            if (issue.pull_request) {
+              core.info(`PR #${issue.number} – skipping`);
+              return;
+            }
+
+            const targetLabel = "Feature added";
+
+            // Check if the applied label is the one we care about
+            if (appliedLabel.toLowerCase() !== targetLabel.toLowerCase()) {
+              core.info(`Label "${appliedLabel}" is not "${targetLabel}" – skipping`);
+              return;
+            }
+
+            // Already closed?
+            if (issue.state === "closed") {
+              core.info(`#${issue.number} is already closed – skipping`);
+              return;
+            }
+
+            // Close the issue
+            await github.rest.issues.update({
+              owner,
+              repo,
+              issue_number: issue.number,
+              state: "closed"
+            });
+
+            // Optional: leave a comment explaining why it was closed
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: issue.number,
+              body: `Closing this issue because it has been labeled **"${targetLabel}"** (feature implemented).`
+            });
+
+            core.info(`#${issue.number} closed due to label "${targetLabel}".`);

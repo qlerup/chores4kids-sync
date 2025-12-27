@@ -1,0 +1,61 @@
+name: Close issue when bug is fixed
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  close-on-bug-fixed:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - name: Close issue on "Bug fixed" label
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const issue = context.payload.issue;
+            const appliedLabel = context.payload.label?.name || "";
+
+            // Only issues, not PRs
+            if (issue.pull_request) {
+              core.info(`PR #${issue.number} – skipping`);
+              return;
+            }
+
+            const targetLabel = "Bug fixed";
+
+            // Check if the applied label is the one we care about
+            if (appliedLabel.toLowerCase() !== targetLabel.toLowerCase()) {
+              core.info(`Label "${appliedLabel}" is not "${targetLabel}" – skipping`);
+              return;
+            }
+
+            // Already closed?
+            if (issue.state === "closed") {
+              core.info(`#${issue.number} is already closed – skipping`);
+              return;
+            }
+
+            // Close the issue
+            await github.rest.issues.update({
+              owner,
+              repo,
+              issue_number: issue.number,
+              state: "closed"
+            });
+
+            // Leave a comment explaining why it was closed + how to reopen
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: issue.number,
+              body: `✅ This issue was automatically closed because it was labeled **"${targetLabel}"**.
+
+            If the problem still exists, reply with **reopen** to automatically open it again.`
+            });
+
+            core.info(`#${issue.number} closed due to label "${targetLabel}".`);
