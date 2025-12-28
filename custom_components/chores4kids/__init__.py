@@ -60,6 +60,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             quick_complete=call.data.get("quick_complete"),
             skip_approval=call.data.get("skip_approval"),
             categories=call.data.get("categories"),
+            fastest_wins=call.data.get("fastest_wins"),
         )
         async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
 
@@ -98,6 +99,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             quick_complete=call.data.get("quick_complete"),
             skip_approval=call.data.get("skip_approval"),
             categories=call.data.get("categories"),
+            fastest_wins=call.data.get("fastest_wins"),
         )
         async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
 
@@ -235,6 +237,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
 
     hass.services.async_register(DOMAIN, 'debug_mark_overdue', svc_debug_mark_overdue)
+
+    # Global UI colors (shared across devices/users)
+    async def svc_set_ui_colors(call: ServiceCall):
+        await store.set_ui_colors(
+            start_task_bg=call.data.get("start_task_bg"),
+            complete_task_bg=call.data.get("complete_task_bg"),
+            kid_points_bg=call.data.get("kid_points_bg"),
+            start_task_text=call.data.get("start_task_text"),
+            complete_task_text=call.data.get("complete_task_text"),
+            kid_points_text=call.data.get("kid_points_text"),
+            task_points_bg=call.data.get("task_points_bg"),
+            task_points_text=call.data.get("task_points_text"),
+            enable_points=call.data.get("enable_points"),
+        )
+        async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
+
+    hass.services.async_register(DOMAIN, "set_ui_colors", svc_set_ui_colors)
 
     async def svc_purge_orphans(call: ServiceCall):
         """Fjern forældreløse entiteter/devices fra tidligere versioner."""
