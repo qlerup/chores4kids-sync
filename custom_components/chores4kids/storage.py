@@ -75,6 +75,21 @@ class Task:
     early_bonus_days: int = 0
     early_bonus_points: int = 0
 
+    # If true, multiple children can be assigned the same task template and the first
+    # child to start/complete it will "claim" it; other children's copies are marked as taken.
+    fastest_wins: bool = False
+    # Set on assigned copies spawned from an unassigned template with fastest_wins enabled.
+    # Used to identify sibling copies (same template) to remove when claimed.
+    fastest_wins_template_id: Optional[str] = None
+
+    # If set, this fastest-wins task has been claimed by another child (or self).
+    # Other children's copies remain visible but cannot be started.
+    fastest_wins_claimed_by_child_id: Optional[str] = None
+    fastest_wins_claimed_by_child_name: Optional[str] = None
+    # Timestamp (milliseconds since epoch) when a fastest-wins task was claimed.
+    # For non-winning siblings, this represents when the task was "lost/taken".
+    fastest_wins_claimed_ts: Optional[int] = None
+
 class KidsChoresStore:
     def __init__(self, hass: HomeAssistant):
         self.hass = hass
@@ -84,6 +99,9 @@ class KidsChoresStore:
         self.categories: List[Category] = []
         self.items: List["ShopItem"] = []
         self.purchases: List["Purchase"] = []
+        # Global UI settings (shared across users/devices via HA storage)
+        self.ui_colors: Dict[str, str] = {}
+        self.enable_points: bool = True
 
     async def async_load(self):
         data = await self._store.async_load()
@@ -109,6 +127,16 @@ class KidsChoresStore:
         # Optional keys for backwards compatibility
         self.items = [ShopItem(**i) for i in data.get("items", [])]
         self.purchases = [Purchase(**p) for p in data.get("purchases", [])]
+        try:
+            raw_colors = data.get("ui_colors") or {}
+            self.ui_colors = {str(k): str(v) for k, v in raw_colors.items() if v is not None}
+        except Exception:
+            self.ui_colors = {}
+
+        try:
+            self.enable_points = bool(data.get("enable_points", True))
+        except Exception:
+            self.enable_points = True
 
     async def async_save(self):
         await self._store.async_save({
@@ -118,7 +146,46 @@ class KidsChoresStore:
             "categories": [asdict(c) for c in self.categories],
             "items": [asdict(i) for i in self.items],
             "purchases": [asdict(p) for p in self.purchases],
+            "ui_colors": dict(self.ui_colors or {}),
+            "enable_points": bool(getattr(self, "enable_points", True)),
         })
+
+    async def set_ui_colors(
+        self,
+        start_task_bg: Optional[str] = None,
+        complete_task_bg: Optional[str] = None,
+        kid_points_bg: Optional[str] = None,
+        start_task_text: Optional[str] = None,
+        complete_task_text: Optional[str] = None,
+        kid_points_text: Optional[str] = None,
+        task_points_bg: Optional[str] = None,
+        task_points_text: Optional[str] = None,
+        enable_points: Optional[bool] = None,
+    ) -> Dict[str, str]:
+        """Set global UI colors. Empty string clears a value."""
+        def _set(key: str, value: Optional[str]):
+            if value is None:
+                return
+            v = str(value).strip()
+            if not v:
+                # clear
+                self.ui_colors.pop(key, None)
+            else:
+                self.ui_colors[key] = v
+
+        _set("start_task_bg", start_task_bg)
+        _set("complete_task_bg", complete_task_bg)
+        _set("kid_points_bg", kid_points_bg)
+        _set("start_task_text", start_task_text)
+        _set("complete_task_text", complete_task_text)
+        _set("kid_points_text", kid_points_text)
+        _set("task_points_bg", task_points_bg)
+        _set("task_points_text", task_points_text)
+
+        if enable_points is not None:
+            self.enable_points = bool(enable_points)
+        await self.async_save()
+        return dict(self.ui_colors)
 
     # --- Children ---
     async def add_child(self, name: str) -> Child:
@@ -165,6 +232,8 @@ class KidsChoresStore:
         early_bonus_enabled: Optional[bool] = None,
         early_bonus_days: Optional[int] = None,
         early_bonus_points: Optional[int] = None,
+        fastest_wins: Optional[bool] = None,
+        fastest_wins_template_id: Optional[str] = None,
     ) -> Task:
         tid = str(uuid4())
         # normalize repeat days to list[int]
@@ -205,6 +274,11 @@ class KidsChoresStore:
                 t.early_bonus_points = max(0, int(early_bonus_points))
             except Exception:
                 t.early_bonus_points = 0
+
+        if fastest_wins is not None:
+            t.fastest_wins = bool(fastest_wins)
+        if fastest_wins_template_id is not None:
+            t.fastest_wins_template_id = str(fastest_wins_template_id).strip() or None
         # Backwards compat: if caller sets days+points but doesn't pass explicit toggle, auto-enable.
         if early_bonus_enabled is None:
             try:
@@ -382,12 +456,21 @@ class KidsChoresStore:
         if not t.assigned_to:
             # Treat unassigned task as a template: spawn a new assigned copy
             # Keep the original in the unassigned list so it can be reused
+            repeat_template_id: Optional[str] = None
+            try:
+                if getattr(t, "repeat_days", None):
+                    # If the template is a repeat-plan task, link the spawned copy back to the template
+                    # so updates to the template can be propagated to active assigned instances.
+                    repeat_template_id = t.id
+            except Exception:
+                repeat_template_id = None
             await self.add_task(
                 title=t.title,
                 points=t.points,
                 description=t.description,
                 due=t.due,
                 assigned_to=child_id,
+                repeat_template_id=repeat_template_id,
                 icon=t.icon,
                 persist_until_completed=getattr(t, "persist_until_completed", False),
                 quick_complete=getattr(t, "quick_complete", False),
@@ -396,6 +479,8 @@ class KidsChoresStore:
                 early_bonus_enabled=getattr(t, "early_bonus_enabled", False),
                 early_bonus_days=getattr(t, "early_bonus_days", 0),
                 early_bonus_points=getattr(t, "early_bonus_points", 0),
+                fastest_wins=bool(getattr(t, "fastest_wins", False)),
+                fastest_wins_template_id=(t.id if bool(getattr(t, "fastest_wins", False)) else None),
             )
             # add_task persists; nothing else to do
             return
@@ -408,9 +493,134 @@ class KidsChoresStore:
         if status not in STATUSES:
             raise ValueError("invalid_status")
         t = self._get_task(task_id)
+
+        def _local_created_date(task: Task):
+            from homeassistant.util import dt as dt_util
+            from datetime import datetime
+
+            created_raw = getattr(task, "created", None)
+            if not created_raw:
+                return None
+            try:
+                dt = dt_util.parse_datetime(str(created_raw))
+                if dt is None:
+                    dt = datetime.fromisoformat(str(created_raw))
+                return dt_util.as_local(dt).date()
+            except Exception:
+                return None
+
+        def _claim_fastest_wins_if_needed(task: Task, next_status: str) -> bool:
+            # Claim when moving away from 'assigned' (start or one-tap completion).
+            if getattr(task, "status", None) != STATUS_ASSIGNED:
+                return False
+            if next_status not in (STATUS_IN_PROGRESS, STATUS_AWAITING):
+                return False
+            if not bool(getattr(task, "fastest_wins", False)):
+                return False
+            day = _local_created_date(task)
+            if day is None:
+                return False
+
+            tpl_id = getattr(task, "fastest_wins_template_id", None)
+            # Fallback grouping for tasks created as separate copies (e.g. repeat/multi-assign flows)
+            # where no template id was recorded.
+            sig = None
+            if not tpl_id:
+                sig = (
+                    str(getattr(task, "title", "") or "").strip().lower(),
+                    int(getattr(task, "points", 0) or 0),
+                    str(getattr(task, "due", "") or "").strip(),
+                )
+
+            siblings: list[Task] = []
+            for other in self.tasks:
+                if other.id == task.id:
+                    continue
+                if _local_created_date(other) != day:
+                    continue
+                # Only consider assigned copies (templates are unassigned)
+                if not getattr(other, "assigned_to", None):
+                    continue
+                if not bool(getattr(other, "fastest_wins", False)):
+                    continue
+                if tpl_id:
+                    if getattr(other, "fastest_wins_template_id", None) != tpl_id:
+                        continue
+                else:
+                    # Only group with other non-template-linked copies that match signature.
+                    if getattr(other, "fastest_wins_template_id", None):
+                        continue
+                    other_sig = (
+                        str(getattr(other, "title", "") or "").strip().lower(),
+                        int(getattr(other, "points", 0) or 0),
+                        str(getattr(other, "due", "") or "").strip(),
+                    )
+                    if other_sig != sig:
+                        continue
+                siblings.append(other)
+
+            # Determine if the task has already been claimed by someone else.
+            existing_claim_id: Optional[str] = None
+            existing_claim_name: Optional[str] = None
+            existing_claim_ts: Optional[int] = None
+            for o in siblings:
+                cid = getattr(o, "fastest_wins_claimed_by_child_id", None) or None
+                cname = getattr(o, "fastest_wins_claimed_by_child_name", None) or None
+                cts = getattr(o, "fastest_wins_claimed_ts", None)
+                if cts and not existing_claim_ts:
+                    try:
+                        existing_claim_ts = int(cts)
+                    except Exception:
+                        existing_claim_ts = None
+                if cid:
+                    existing_claim_id = cid
+                    existing_claim_name = cname
+                    break
+                # Backwards-compat: if a sibling already progressed (older versions), treat it as claimed.
+                if getattr(o, "status", None) != STATUS_ASSIGNED and getattr(o, "assigned_to", None):
+                    existing_claim_id = getattr(o, "assigned_to", None)
+                    try:
+                        existing_claim_name = self._get_child(existing_claim_id).name
+                    except Exception:
+                        existing_claim_name = None
+                    break
+
+            # If already claimed by another child, mark this task and block the transition.
+            my_child_id = getattr(task, "assigned_to", None)
+            if existing_claim_id and my_child_id and existing_claim_id != my_child_id:
+                task.fastest_wins_claimed_by_child_id = existing_claim_id
+                task.fastest_wins_claimed_by_child_name = existing_claim_name
+                task.fastest_wins_claimed_ts = existing_claim_ts
+                return True
+
+            # Not claimed yet -> this child claims it; mark siblings as taken.
+            if not my_child_id:
+                return False
+            try:
+                my_child_name = self._get_child(my_child_id).name
+            except Exception:
+                my_child_name = None
+            task.fastest_wins_claimed_by_child_id = my_child_id
+            task.fastest_wins_claimed_by_child_name = my_child_name
+            claim_ts = existing_claim_ts
+            if not claim_ts:
+                claim_ts = int(dt_util.utcnow().timestamp() * 1000)
+            task.fastest_wins_claimed_ts = claim_ts
+            for o in siblings:
+                o.fastest_wins_claimed_by_child_id = my_child_id
+                o.fastest_wins_claimed_by_child_name = my_child_name
+                o.fastest_wins_claimed_ts = claim_ts
+            return False
         # Store completion timestamp if provided
         if completed_ts is not None:
             t.completed_ts = completed_ts
+
+        # Fastest-wins: when a child starts or completes, mark other children's copies as taken
+        # and block late claimers.
+        blocked = _claim_fastest_wins_if_needed(t, status)
+        if blocked:
+            await self.async_save()
+            raise ValueError("task_already_claimed")
 
         # If the task is configured to skip approval, auto-approve when it would
         # normally be sent for parent approval.
@@ -618,12 +828,18 @@ class KidsChoresStore:
         quick_complete: Optional[bool] = None,
         skip_approval: Optional[bool] = None,
         categories: Optional[list[str]] = None,
+        fastest_wins: Optional[bool] = None,
     ):
         """Update core editable fields on a task.
 
         Note: Repeat settings are managed via set_task_repeat.
         """
         t = self._get_task(task_id)
+        is_template = False
+        try:
+            is_template = (t.assigned_to is None) or (str(t.assigned_to).strip() == "")
+        except Exception:
+            is_template = False
         if title is not None:
             t.title = str(title).strip()
         if points is not None:
@@ -667,6 +883,38 @@ class KidsChoresStore:
             except Exception:
                 new_ids = []
             t.categories = new_ids
+
+        if fastest_wins is not None:
+            t.fastest_wins = bool(fastest_wins)
+
+        # Keep already spawned repeat instances in sync with the template.
+        # This addresses the UX expectation that editing a task under "Tasks" updates the
+        # already assigned tasks that were created from it.
+        if is_template:
+            try:
+                active_statuses = {STATUS_ASSIGNED, STATUS_IN_PROGRESS, STATUS_AWAITING, STATUS_REJECTED}
+                for inst in self.tasks:
+                    if not getattr(inst, "assigned_to", None):
+                        continue
+                    if getattr(inst, "repeat_template_id", None) != t.id:
+                        continue
+                    if getattr(inst, "status", None) not in active_statuses:
+                        # Keep approved history immutable
+                        continue
+
+                    inst.title = t.title
+                    inst.points = int(t.points)
+                    inst.description = getattr(t, "description", "") or ""
+                    inst.icon = getattr(t, "icon", "") or ""
+                    inst.categories = list(getattr(t, "categories", []) or [])
+                    inst.early_bonus_enabled = bool(getattr(t, "early_bonus_enabled", False))
+                    inst.early_bonus_days = int(getattr(t, "early_bonus_days", 0) or 0)
+                    inst.early_bonus_points = int(getattr(t, "early_bonus_points", 0) or 0)
+                    inst.persist_until_completed = bool(getattr(t, "persist_until_completed", False))
+                    inst.quick_complete = bool(getattr(t, "quick_complete", False))
+                    inst.skip_approval = bool(getattr(t, "skip_approval", False))
+            except Exception:
+                pass
 
         # If this is a template and early-bonus repeat is active, ensure instances exist.
         try:
@@ -807,6 +1055,7 @@ class KidsChoresStore:
                             assigned_to=target,
                             icon=tpl.get("icon") or "",
                             due=tpl.get("due"),
+                            repeat_template_id=str(tpl.get("id") or "") or None,
                             early_bonus_enabled=tpl.get("early_bonus_enabled"),
                             early_bonus_days=tpl.get("early_bonus_days"),
                             early_bonus_points=tpl.get("early_bonus_points"),
