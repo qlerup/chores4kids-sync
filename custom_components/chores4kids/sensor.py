@@ -17,6 +17,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     entities: dict[str, KidsChoresPointsSensor] = {}
     all_tasks_sensor: Chores4KidsAllTasksSensor | None = None
     shop_sensor: Chores4KidsShopSensor | None = None
+    ui_sensor: Chores4KidsUiSensor | None = None
 
     async def _cleanup_removed_entities(removed_ids: set[str]):
         registry = er.async_get(hass)
@@ -59,6 +60,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         if shop_sensor is None:
             shop_sensor = Chores4KidsShopSensor(store)
             async_add_entities([shop_sensor])
+
+        # Ensure UI settings sensor exists
+        nonlocal ui_sensor
+        if ui_sensor is None:
+            ui_sensor = Chores4KidsUiSensor(store)
+            async_add_entities([ui_sensor])
         # Remove sensors for deleted children (runtime removal + registry/device cleanup)
         current_ids = {c.id for c in store.children}
         removed_ids = set(entities.keys()) - current_ids
@@ -96,6 +103,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             all_tasks_sensor.async_schedule_update_ha_state(True)
         if shop_sensor is not None:
             shop_sensor.async_schedule_update_ha_state(True)
+        if ui_sensor is not None:
+            ui_sensor.async_schedule_update_ha_state(True)
 
     _sync_entities()
 
@@ -159,6 +168,10 @@ class KidsChoresPointsSensor(SensorEntity):
             "carried_over": getattr(t, "carried_over", False),
             "quick_complete": getattr(t, "quick_complete", False),
             "skip_approval": getattr(t, "skip_approval", False),
+            "fastest_wins": getattr(t, "fastest_wins", False),
+            "fastest_wins_claimed_by_child_id": getattr(t, "fastest_wins_claimed_by_child_id", None),
+            "fastest_wins_claimed_by_child_name": getattr(t, "fastest_wins_claimed_by_child_name", None),
+            "fastest_wins_claimed_ts": getattr(t, "fastest_wins_claimed_ts", None),
         } for t in tasks]
         return {
             "child_id": ch.id,
@@ -220,9 +233,52 @@ class Chores4KidsAllTasksSensor(SensorEntity):
             "skip_approval": getattr(t, "skip_approval", False),
             "categories": getattr(t, "categories", []),
             "carried_over": getattr(t, "carried_over", False),
+            "fastest_wins": getattr(t, "fastest_wins", False),
+            "fastest_wins_template_id": getattr(t, "fastest_wins_template_id", None),
+            "fastest_wins_claimed_by_child_id": getattr(t, "fastest_wins_claimed_by_child_id", None),
+            "fastest_wins_claimed_by_child_name": getattr(t, "fastest_wins_claimed_by_child_name", None),
+            "fastest_wins_claimed_ts": getattr(t, "fastest_wins_claimed_ts", None),
         } for t in self._store.tasks]
         categories = [{"id": cat.id, "name": cat.name} for cat in getattr(self._store, "categories", [])]
         return {"tasks": tasks, "categories": categories}
+
+
+class Chores4KidsUiSensor(SensorEntity):
+    _attr_has_entity_name = True
+    _attr_name = "Chores4Kids UI"
+    _attr_unique_id = "chores4kids_ui"
+
+    def __init__(self, store: KidsChoresStore):
+        self._store = store
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, "ui")},
+            name="Chores4Kids – UI",
+            manufacturer="Chores4Kids",
+            model="UI Settings",
+        )
+
+    @property
+    def native_value(self):
+        try:
+            return "configured" if bool(getattr(self._store, "ui_colors", {}) or {}) else "default"
+        except Exception:
+            return "default"
+
+    @property
+    def extra_state_attributes(self):
+        colors = getattr(self._store, "ui_colors", {}) or {}
+        # expose explicit keys for stable frontend lookup
+        return {
+            "enable_points": bool(getattr(self._store, "enable_points", True)),
+            "start_task_bg": colors.get("start_task_bg", ""),
+            "complete_task_bg": colors.get("complete_task_bg", ""),
+            "kid_points_bg": colors.get("kid_points_bg", ""),
+            "start_task_text": colors.get("start_task_text", ""),
+            "complete_task_text": colors.get("complete_task_text", ""),
+            "kid_points_text": colors.get("kid_points_text", ""),
+            "task_points_bg": colors.get("task_points_bg", ""),
+            "task_points_text": colors.get("task_points_text", ""),
+        }
 
 
 class Chores4KidsShopSensor(SensorEntity):
