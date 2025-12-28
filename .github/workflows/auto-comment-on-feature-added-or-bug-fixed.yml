@@ -1,0 +1,153 @@
+name: Keep issues updated with latest release (Feature added / Bug fixed)
+
+on:
+  issues:
+    types: [opened, labeled, reopened]
+  release:
+    types: [published]
+  schedule:
+    - cron: "0 7 * * *" # dagligt 07:00 UTC (≈ 08:00 i DK om vinteren)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  update-comments:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Upsert comment(s)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const LABELS = {
+              feature: "Feature added",
+              bug: "Bug fixed",
+            };
+
+            const MARKERS = {
+              feature: "<!-- latest-release-feature-added -->",
+              bug: "<!-- latest-release-bug-fixed -->",
+            };
+
+            function buildBody(type, version, url) {
+              if (type === "feature") {
+                return `${MARKERS.feature}
+✅ **Feature added** label detected.
+
+Latest release: **${version}**
+🔗 ${url}`;
+              }
+              if (type === "bug") {
+                return `${MARKERS.bug}
+🐛 **Bug fixed** label detected.
+
+Latest release: **${version}**
+🔗 ${url}`;
+              }
+              throw new Error("Unknown comment type: " + type);
+            }
+
+            async function getLatestRelease() {
+              const releases = await github.rest.repos.listReleases({
+                owner,
+                repo,
+                per_page: 50,
+              });
+
+              // Seneste release der ikke er draft/prerelease
+              return releases.data.find(r => !r.draft && !r.prerelease) || null;
+            }
+
+            async function upsert(issueNumber, type, body) {
+              const marker = type === "feature" ? MARKERS.feature : MARKERS.bug;
+
+              const comments = await github.rest.issues.listComments({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                per_page: 100,
+              });
+
+              const existing = comments.data.find(c => (c.body || "").includes(marker));
+
+              if (existing) {
+                await github.rest.issues.updateComment({
+                  owner,
+                  repo,
+                  comment_id: existing.id,
+                  body,
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: issueNumber,
+                  body,
+                });
+              }
+            }
+
+            const latest = await getLatestRelease();
+            if (!latest) {
+              core.warning("No non-draft, non-prerelease releases found.");
+              return;
+            }
+
+            const version = latest.tag_name || latest.name || "unknown";
+            const url = latest.html_url;
+
+            async function handleIssue(issue) {
+              // Skip PRs (issues API kan returnere PRs i nogle lister)
+              if (issue.pull_request) return;
+
+              const labelNames = (issue.labels || []).map(l => l.name);
+
+              const hasFeature = labelNames.includes(LABELS.feature);
+              const hasBug = labelNames.includes(LABELS.bug);
+
+              if (hasFeature) {
+                await upsert(issue.number, "feature", buildBody("feature", version, url));
+              }
+              if (hasBug) {
+                await upsert(issue.number, "bug", buildBody("bug", version, url));
+              }
+            }
+
+            // Case 1: issue-event -> opdatér kun den issue (hvis den har en/begge labels)
+            if (context.eventName === "issues") {
+              await handleIssue(context.payload.issue);
+              return;
+            }
+
+            // Case 2: release/schedule/manual -> opdatér ALLE issues med en af labels
+            // GitHub "labels" filter kræver alle labels (AND), så vi henter dem hver for sig og union'er.
+            const featureIssues = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: "open",
+              labels: LABELS.feature,
+              per_page: 100,
+            });
+
+            const bugIssues = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: "open",
+              labels: LABELS.bug,
+              per_page: 100,
+            });
+
+            // Union på issue number
+            const map = new Map();
+            for (const i of [...featureIssues, ...bugIssues]) {
+              if (!i.pull_request) map.set(i.number, i);
+            }
+
+            for (const issue of map.values()) {
+              await handleIssue(issue);
+            }
