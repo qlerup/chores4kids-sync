@@ -278,6 +278,9 @@ class Chores4KidsUiSensor(SensorEntity):
             "kid_points_text": colors.get("kid_points_text", ""),
             "task_points_bg": colors.get("task_points_bg", ""),
             "task_points_text": colors.get("task_points_text", ""),
+            "kid_task_title_size": colors.get("kid_task_title_size", ""),
+            "kid_task_points_size": colors.get("kid_task_points_size", ""),
+            "kid_task_button_size": colors.get("kid_task_button_size", ""),
         }
 
 
