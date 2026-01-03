@@ -249,6 +249,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             kid_points_text=call.data.get("kid_points_text"),
             task_points_bg=call.data.get("task_points_bg"),
             task_points_text=call.data.get("task_points_text"),
+            kid_task_title_size=call.data.get("kid_task_title_size"),
+            kid_task_points_size=call.data.get("kid_task_points_size"),
+            kid_task_button_size=call.data.get("kid_task_button_size"),
             enable_points=call.data.get("enable_points"),
         )
         async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
