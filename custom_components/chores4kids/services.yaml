@@ -236,3 +236,16 @@ set_ui_colors:
       required: false
       description: Text color for the task points bubble/chip (CSS color, e.g. #FFFFFF).
       example: "#FFFFFF"
+
+    kid_task_title_size:
+      required: false
+      description: Font size for task title in kid view (CSS size, e.g. 18px). Empty clears.
+      example: "18px"
+    kid_task_points_size:
+      required: false
+      description: Font size for the task points chip in kid view (CSS size, e.g. 14px). Empty clears.
+      example: "14px"
+    kid_task_button_size:
+      required: false
+      description: Font size for the task action buttons in kid view (CSS size, e.g. 16px). Empty clears.
+      example: "16px"
