@@ -3,6 +3,7 @@ from dataclasses import dataclass, asdict, field
 from typing import Any, Dict, List, Optional
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 from uuid import uuid4
 import os
 import asyncio
@@ -160,6 +161,9 @@ class KidsChoresStore:
         kid_points_text: Optional[str] = None,
         task_points_bg: Optional[str] = None,
         task_points_text: Optional[str] = None,
+        kid_task_title_size: Optional[str] = None,
+        kid_task_points_size: Optional[str] = None,
+        kid_task_button_size: Optional[str] = None,
         enable_points: Optional[bool] = None,
     ) -> Dict[str, str]:
         """Set global UI colors. Empty string clears a value."""
@@ -181,6 +185,11 @@ class KidsChoresStore:
         _set("kid_points_text", kid_points_text)
         _set("task_points_bg", task_points_bg)
         _set("task_points_text", task_points_text)
+
+        # Kid card font sizes (CSS values, typically px)
+        _set("kid_task_title_size", kid_task_title_size)
+        _set("kid_task_points_size", kid_task_points_size)
+        _set("kid_task_button_size", kid_task_button_size)
 
         if enable_points is not None:
             self.enable_points = bool(enable_points)
@@ -926,7 +935,7 @@ class KidsChoresStore:
     async def daily_rollover(self):
         """Midnight housekeeping: start fresh each day.
 
-        - Remove ALL tasks from previous days (approved, awaiting, unfinished, etc.).
+                - Remove tasks from previous days unless explicitly configured to carry.
         - Then create today's repeated tasks based on the repeat templates captured
           from the existing tasks before cleanup.
         """
@@ -963,50 +972,51 @@ class KidsChoresStore:
                     "targets": [x for x in targets if x],
                 })
 
+        def _local_created_date(task: Task):
+            created_raw = getattr(task, "created", None)
+            if not created_raw:
+                return None
+            try:
+                created_dt = dt_util.parse_datetime(str(created_raw))
+                if created_dt is None:
+                    created_dt = datetime.fromisoformat(str(created_raw))
+                return dt_util.as_local(created_dt).date()
+            except Exception:
+                return None
+
         # 1) Roll/clean older tasks with rules:
         #    - NEVER remove unassigned template tasks (assigned_to is empty)
-        #    - KEEP tasks that are awaiting approval so parents can approve next day;
-        #      also refresh their created date to today so repeat planner won't duplicate.
-        #    - If persist_until_completed is true and task is not approved, KEEP and refresh created to today.
+        #    - Only carry tasks forward when persist_until_completed is true and task is not approved.
         kept: list[Task] = []
         for t in self.tasks:
-            try:
-                created = dt_util.parse_datetime(t.created)
-                if created is None:
-                    created = datetime.fromisoformat(t.created)
-                created_local = dt_util.as_local(created)
-                if created_local.date() < today and (t.assigned_to is not None and t.assigned_to != ""):
-                    carry = False
-                    if t.status == STATUS_AWAITING:
-                        carry = True
-                    elif getattr(t, "persist_until_completed", False) and t.status != STATUS_APPROVED:
-                        carry = True
-                    if carry:
-                        # refresh created to today so exists_today() sees it
-                        from datetime import datetime as _dt, timezone as _tz
-                        t.created = _dt.now(_tz.utc).isoformat()
-                        # Mark as carried over for frontend visual indication
-                        t.carried_over = True
-                    else:
-                        continue  # drop non-persistent older tasks; keep templates forever
-            except Exception:
-                pass
-            kept.append(t)
+            is_template = not (getattr(t, "assigned_to", None) and str(getattr(t, "assigned_to", "")).strip())
+            if is_template:
+                kept.append(t)
+                continue
+
+            created_date = _local_created_date(t)
+            # If created is missing/invalid, treat it as "old" so it doesn't stick around forever.
+            is_older = (created_date is None) or (created_date < today)
+            if is_older:
+                if bool(getattr(t, "persist_until_completed", False)) and getattr(t, "status", None) != STATUS_APPROVED:
+                    from datetime import datetime as _dt, timezone as _tz
+                    t.created = _dt.now(_tz.utc).isoformat()
+                    t.carried_over = True
+                    kept.append(t)
+                else:
+                    continue
+            else:
+                kept.append(t)
         self.tasks = kept
 
         # 2) Auto-create today's repeated tasks from captured templates
-        def exists_today(title: str, child_id: str) -> bool:
-            for t in self.tasks:
-                if t.assigned_to == child_id and t.title == title:
-                    try:
-                        cd = dt_util.as_local(dt_util.parse_datetime(t.created)).date()
-                    except Exception:
-                        try:
-                            cd = datetime.fromisoformat(t.created).date()
-                        except Exception:
-                            continue
-                    if cd == today:
-                        return True
+        # Prefer using repeat_template_id to detect existing active instances (more robust than title/date).
+        def _active_instance_exists(template_id: str, child_id: str) -> bool:
+            try:
+                if template_id and self._active_repeat_instance_exists(template_id, child_id):
+                    return True
+            except Exception:
+                pass
             return False
 
         for tpl in templates:
@@ -1046,24 +1056,38 @@ class KidsChoresStore:
 
             # Legacy repeat behavior: create only on the selected weekday.
             if weekday in rdays:
+                tpl_id = str(tpl.get("id") or "")
                 for target in targets:
-                    if target and not exists_today(tpl["title"], target):
-                        await self.add_task(
-                            title=tpl["title"],
-                            points=tpl["points"],
-                            description=tpl["description"],
-                            assigned_to=target,
-                            icon=tpl.get("icon") or "",
-                            due=tpl.get("due"),
-                            repeat_template_id=str(tpl.get("id") or "") or None,
-                            early_bonus_enabled=tpl.get("early_bonus_enabled"),
-                            early_bonus_days=tpl.get("early_bonus_days"),
-                            early_bonus_points=tpl.get("early_bonus_points"),
-                            persist_until_completed=tpl.get("persist_until_completed", False),
-                            quick_complete=tpl.get("quick_complete", False),
-                            skip_approval=tpl.get("skip_approval", False),
-                            categories=list(tpl.get("categories") or [])
-                        )
+                    if not target:
+                        continue
+                    if _active_instance_exists(tpl_id, target):
+                        continue
+                    # Fallback de-dupe (in case older data didn't set repeat_template_id)
+                    try:
+                        if any(
+                            (x.assigned_to == target and x.title == tpl.get("title") and _local_created_date(x) == today)
+                            for x in self.tasks
+                        ):
+                            continue
+                    except Exception:
+                        pass
+
+                    await self.add_task(
+                        title=tpl["title"],
+                        points=tpl["points"],
+                        description=tpl["description"],
+                        assigned_to=target,
+                        icon=tpl.get("icon") or "",
+                        due=tpl.get("due"),
+                        repeat_template_id=tpl_id or None,
+                        early_bonus_enabled=tpl.get("early_bonus_enabled"),
+                        early_bonus_days=tpl.get("early_bonus_days"),
+                        early_bonus_points=tpl.get("early_bonus_points"),
+                        persist_until_completed=tpl.get("persist_until_completed", False),
+                        quick_complete=tpl.get("quick_complete", False),
+                        skip_approval=tpl.get("skip_approval", False),
+                        categories=list(tpl.get("categories") or [])
+                    )
 
         await self.async_save()
 
