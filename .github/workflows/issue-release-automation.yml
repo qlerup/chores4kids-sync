@@ -1,0 +1,286 @@
+name: "Issue automation: ready-for-release + release closing (bugs & features)"
+
+'on':
+  issues:
+    types: [labeled]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  automate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment / label / close
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+
+            // ---- Labels in your repo (keep names EXACT) ----
+            const LABELS = {
+              bugWaiting: 'Bug fixed - created - waiting for release',
+              bugReleased: 'Bug fixed - released',
+
+              featureWaiting: 'New feature - created - waiting for release',
+              featureAddedReleased: 'Feature added - released',
+              featurePlanned: 'Feature will be added',
+
+              // Legacy labels (safe cleanup if they exist)
+              legacyBugFixed: 'Bug fixed',
+              legacyFeatureAdded: 'Feature added',
+            };
+
+            // ---- Comment markers (so we can update instead of spamming) ----
+            const MARKERS = {
+              bugWaiting: '<!-- status:bug-waiting-release -->',
+              featureWaiting: '<!-- status:feature-waiting-release -->',
+              bugReleased: '<!-- status:bug-released -->',
+              featureReleased: '<!-- status:feature-released -->',
+            };
+
+            function waitingBody(type) {
+              if (type === 'bug') {
+                return `${MARKERS.bugWaiting}
+            ✅ This bug has been marked as **fixed** and will be included in the **next release**.
+
+            When the release is published, this issue will be automatically updated and closed.
+
+            If the problem still exists after the release, comment with **reopen** (it will be reopened automatically).`;
+              }
+
+              if (type === 'feature') {
+                return `${MARKERS.featureWaiting}
+            ✅ This feature has been marked as **ready** and will be included in the **next release**.
+
+            When the release is published, this issue will be automatically updated and closed.
+
+            If anything is still missing after the release, comment with **reopen** (it will be reopened automatically).`;
+              }
+
+              throw new Error('Unknown waiting type: ' + type);
+            }
+
+            function releasedBody(type, version, url) {
+              if (type === 'bug') {
+                return `${MARKERS.bugReleased}
+            ✅ **Bug fix released** in **${version}**
+            🔗 ${url}
+
+            If the problem still exists, comment with **reopen**.`;
+              }
+
+              if (type === 'feature') {
+                return `${MARKERS.featureReleased}
+            ✅ **Feature released** in **${version}**
+            🔗 ${url}
+
+            If anything is still missing, comment with **reopen**.`;
+              }
+
+              throw new Error('Unknown released type: ' + type);
+            }
+
+            async function ensureLabel(name, color, description) {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name });
+              } catch (e) {
+                if (e.status === 404) {
+                  await github.rest.issues.createLabel({ owner, repo, name, color, description });
+                  core.info(`Created label: ${name}`);
+                } else {
+                  throw e;
+                }
+              }
+            }
+
+            const lastReopenCache = new Map();
+
+            async function listAllComments(issue_number) {
+              return await github.paginate(
+                github.rest.issues.listComments,
+                { owner, repo, issue_number, per_page: 100 }
+              );
+            }
+
+            async function getLastReopenAt(issue_number) {
+              if (lastReopenCache.has(issue_number)) return lastReopenCache.get(issue_number);
+
+              const events = await github.paginate(
+                github.rest.issues.listEvents,
+                { owner, repo, issue_number, per_page: 100 }
+              );
+
+              const reopened = events.filter(e => e.event === 'reopened');
+              if (!reopened.length) {
+                lastReopenCache.set(issue_number, null);
+                return null;
+              }
+
+              const latest = reopened.reduce((acc, e) =>
+                new Date(e.created_at) > new Date(acc.created_at) ? e : acc
+              );
+
+              const dt = new Date(latest.created_at);
+              lastReopenCache.set(issue_number, dt);
+              return dt;
+            }
+
+            async function upsertComment(issue_number, marker, body) {
+              const [comments, lastReopenAt] = await Promise.all([
+                listAllComments(issue_number),
+                getLastReopenAt(issue_number),
+              ]);
+
+              let existing = null;
+
+              if (lastReopenAt) {
+                existing = comments
+                  .filter(c => (c.body || '').includes(marker))
+                  .filter(c => new Date(c.updated_at || c.created_at) > lastReopenAt)
+                  .sort((a, b) =>
+                    new Date(b.updated_at || b.created_at) - new Date(a.updated_at || a.created_at)
+                  )[0] || null;
+              } else {
+                existing = comments.find(c => (c.body || '').includes(marker)) || null;
+              }
+
+              if (existing) {
+                await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+                return;
+              }
+
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+            async function safeRemoveLabel(issue_number, name) {
+              try {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number, name });
+              } catch (e) {
+                if (e.status !== 404) throw e;
+              }
+            }
+
+            async function getReleaseInfo() {
+              if (context.eventName === 'release') {
+                const rel = context.payload.release;
+                const version = rel.tag_name || rel.name || 'unknown';
+                const url = rel.html_url;
+                return { version, url };
+              }
+
+              const releases = await github.rest.repos.listReleases({ owner, repo, per_page: 50 });
+              const latest = releases.data.find(r => !r.draft && !r.prerelease);
+              if (!latest) return null;
+
+              return {
+                version: latest.tag_name || latest.name || 'unknown',
+                url: latest.html_url,
+              };
+            }
+
+            async function issuesWithLabelOpen(labelName) {
+              const issues = await github.paginate(
+                github.rest.issues.listForRepo,
+                { owner, repo, state: 'open', labels: labelName, per_page: 100 }
+              );
+              return issues.filter(i => !i.pull_request);
+            }
+
+            async function closeAsReleased(issue, type, version, url) {
+              const issue_number = issue.number;
+
+              // 1) Comment
+              if (type === 'bug') {
+                await upsertComment(issue_number, MARKERS.bugReleased, releasedBody('bug', version, url));
+              } else {
+                await upsertComment(issue_number, MARKERS.featureReleased, releasedBody('feature', version, url));
+              }
+
+              // 2) Labels
+              if (type === 'bug') {
+                await safeRemoveLabel(issue_number, LABELS.bugWaiting);
+                await safeRemoveLabel(issue_number, LABELS.legacyBugFixed);
+
+                await github.rest.issues.addLabels({
+                  owner,
+                  repo,
+                  issue_number,
+                  labels: [LABELS.bugReleased],
+                });
+              } else {
+                await safeRemoveLabel(issue_number, LABELS.featureWaiting);
+                await safeRemoveLabel(issue_number, LABELS.featurePlanned);
+                await safeRemoveLabel(issue_number, LABELS.legacyFeatureAdded);
+
+                await github.rest.issues.addLabels({
+                  owner,
+                  repo,
+                  issue_number,
+                  labels: [LABELS.featureAddedReleased],
+                });
+              }
+
+              // 3) Close
+              await github.rest.issues.update({ owner, repo, issue_number, state: 'closed' });
+
+              core.info(`#${issue_number}: closed as released (${type}).`);
+            }
+
+            // --------------------
+            // ISSUE: labeled -> add "waiting for release" comment
+            // --------------------
+            if (context.eventName === 'issues') {
+              const issue = context.payload.issue;
+              const appliedLabel = context.payload.label?.name || '';
+
+              if (issue.pull_request) {
+                core.info(`PR #${issue.number} – skipping`);
+                return;
+              }
+
+              if (appliedLabel === LABELS.bugWaiting) {
+                await upsertComment(issue.number, MARKERS.bugWaiting, waitingBody('bug'));
+                core.info(`#${issue.number}: waiting-for-release comment (bug).`);
+                return;
+              }
+
+              if (appliedLabel === LABELS.featureWaiting) {
+                await upsertComment(issue.number, MARKERS.featureWaiting, waitingBody('feature'));
+                core.info(`#${issue.number}: waiting-for-release comment (feature).`);
+                return;
+              }
+
+              core.info(`Label "${appliedLabel}" is not a waiting-for-release label – skipping.`);
+              return;
+            }
+
+            // --------------------
+            // RELEASE: published OR workflow_dispatch -> close all "waiting for release" issues
+            // --------------------
+            const rel = await getReleaseInfo();
+            if (!rel) {
+              core.warning('No release found (non-draft/non-prerelease).');
+              return;
+            }
+
+            await ensureLabel(LABELS.bugReleased, '0e8a16', 'Bug fixed and released');
+            await ensureLabel(LABELS.featureAddedReleased, '1d76db', 'Feature added and released');
+
+            const bugIssues = await issuesWithLabelOpen(LABELS.bugWaiting);
+            const featureIssues = await issuesWithLabelOpen(LABELS.featureWaiting);
+
+            for (const issue of bugIssues) {
+              await closeAsReleased(issue, 'bug', rel.version, rel.url);
+            }
+
+            for (const issue of featureIssues) {
+              await closeAsReleased(issue, 'feature', rel.version, rel.url);
+            }
+
+            core.info(`Done. Processed bugs=${bugIssues.length}, features=${featureIssues.length}.`);

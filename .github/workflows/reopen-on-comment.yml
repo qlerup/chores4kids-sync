@@ -1,0 +1,96 @@
+name: Reopen issue when someone comments "reopen"
+
+on:
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  reopen:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reopen when comment contains "reopen"
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = (context.payload.comment?.body || "").trim();
+
+            // Match "reopen" som et selvstændigt ord (case-insensitive)
+            const matches = /\breopen\b/i.test(body);
+            if (!matches) {
+              core.info('No "reopen" keyword found. Exiting.');
+              return;
+            }
+
+            const issue = context.payload.issue;
+            if (!issue) {
+              core.info("No issue payload. Exiting.");
+              return;
+            }
+
+            if (issue.state !== "closed") {
+              core.info("Issue is not closed. Nothing to do.");
+              return;
+            }
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const number = issue.number;
+
+            const labelsToRemove = [
+              "Bug fixed - released",
+              "Feature added - released",
+            ];
+
+            async function removeLabelIfExists(name) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner,
+                  repo,
+                  issue_number: number,
+                  name,
+                });
+                core.info(`Removed label: "${name}"`);
+              } catch (err) {
+                // 404 = label findes ikke på issuet (eller label-navn matcher ikke 100%)
+                if (err?.status === 404) {
+                  core.info(`Label not present (or name mismatch): "${name}"`);
+                  return;
+                }
+                throw err;
+              }
+            }
+
+            // Hvis det er en PR (issue_comment gælder også PR's), brug pulls.update
+            if (issue.pull_request) {
+              core.info(`Reopening PR #${number}...`);
+              await github.rest.pulls.update({
+                owner,
+                repo,
+                pull_number: number,
+                state: "open",
+              });
+
+              // Fjern labels efter reopen
+              for (const name of labelsToRemove) {
+                await removeLabelIfExists(name);
+              }
+              return;
+            }
+
+            // Almindeligt issue
+            core.info(`Reopening issue #${number}...`);
+            await github.rest.issues.update({
+              owner,
+              repo,
+              issue_number: number,
+              state: "open",
+            });
+
+            // Fjern labels efter reopen
+            for (const name of labelsToRemove) {
+              await removeLabelIfExists(name);
+            }

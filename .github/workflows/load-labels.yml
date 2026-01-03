@@ -1,0 +1,83 @@
+name: Reset labels
+
+on:
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  labels:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reset labels (delete extras + create/update desired)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DESIRED_LABELS_JSON: >-
+            [
+              { "name": "Awaiting response", "color": "FFFF00", "description": "" },
+              { "name": "bug", "color": "d73a4a", "description": "Bug: errors, crashes, unexpected behavior" },
+              { "name": "Bug fixed - created - waiting for release", "color": "e58c83", "description": "" },
+              { "name": "Bug fixed - released", "color": "1ec641", "description": "When a bug is fixed" },
+              { "name": "closed-by-automation", "color": "ededed", "description": "Closed automatically by workflow" },
+              { "name": "Feature added - released", "color": "05bcde", "description": "" },
+              { "name": "Feature will be added", "color": "bd69a9", "description": "" },
+              { "name": "Locale added - waiting for release", "color": "7057ff", "description": "" },
+              { "name": "New comment", "color": "326fe7", "description": "" },
+              { "name": "New feature", "color": "0b463d", "description": "" },
+              { "name": "New feature - created - waiting for release", "color": "bf407c", "description": "" },
+              { "name": "New locale", "color": "9bbdcb", "description": "" }
+            ]
+        run: |
+          set -euo pipefail
+
+          OWNER="${GITHUB_REPOSITORY%/*}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+          echo "Repo: $OWNER/$REPO"
+
+          urlencode () {
+            python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
+          }
+
+          # Build desired set
+          declare -A DESIRED
+          while IFS= read -r name; do
+            DESIRED["$name"]=1
+          done < <(echo "$DESIRED_LABELS_JSON" | jq -r '.[].name')
+
+          # Fetch existing labels (paginate)
+          mapfile -t EXISTING < <(gh api "repos/$OWNER/$REPO/labels?per_page=100" --paginate --jq '.[].name')
+
+          # Delete labels not in desired list
+          for label in "${EXISTING[@]}"; do
+            if [[ -z "${DESIRED[$label]+x}" ]]; then
+              enc="$(urlencode "$label")"
+              echo "Deleting label: $label"
+              gh api -X DELETE "repos/$OWNER/$REPO/labels/$enc" >/dev/null || true
+            fi
+          done
+
+          # Create or update desired labels
+          echo "$DESIRED_LABELS_JSON" | jq -c '.[]' | while read -r item; do
+            name="$(echo "$item" | jq -r '.name')"
+            color="$(echo "$item" | jq -r '.color')"
+            desc="$(echo "$item" | jq -r '.description')"
+            enc="$(urlencode "$name")"
+
+            echo "Upserting label: $name"
+
+            # Try update first; if it fails, create it
+            if gh api -X PATCH "repos/$OWNER/$REPO/labels/$enc" \
+              -f new_name="$name" \
+              -f color="$color" \
+              -f description="$desc" >/dev/null 2>&1; then
+              :
+            else
+              gh api -X POST "repos/$OWNER/$REPO/labels" \
+                -f name="$name" \
+                -f color="$color" \
+                -f description="$desc" >/dev/null
+            fi
+          done
+
+          echo "Done."
