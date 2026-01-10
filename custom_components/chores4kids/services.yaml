@@ -58,6 +58,11 @@ add_task:
       required: false
       description: "List of category ids to attach to the task"
 
+    schedule_mode:
+      required: false
+      description: "Scheduling mode for templates: repeat (use repeat_days), weekly (every Monday), monthly (1st of month)"
+      example: "weekly"
+
     fastest_wins:
       required: false
       description: "If true, and the task template is assigned to multiple children, the first child to start/complete it will claim it; other children's copies will show who claimed it and cannot be started"
@@ -142,6 +147,10 @@ set_task_repeat:
     repeat_child_id:
       required: false
       description: "Child id to auto-assign on repeated days"
+    schedule_mode:
+      required: false
+      description: "Scheduling mode for templates: repeat, weekly, monthly. Weekly/monthly override repeat_days."
+      example: "monthly"
 
 set_task_icon:
   name: Set task icon
@@ -181,6 +190,10 @@ add_category:
     name:
       required: true
       example: "Cleaning"
+    color:
+      required: false
+      description: "Hex color like #ff0000 (optional)"
+      example: "#4ecdc4"
 
 rename_category:
   name: Rename category
@@ -196,10 +209,26 @@ delete_category:
     category_id:
       required: true
 
+set_category_color:
+  name: Set category color
+  description: Set the hex color for a category (used in the card UI across devices).
+  fields:
+    category_id:
+      required: true
+      description: "Category id"
+    color:
+      required: false
+      description: "Hex color like #ff0000 (or empty to clear)"
+      example: "#4ecdc4"
+
 set_ui_colors:
   name: Set UI colors
   description: Set global UI colors used by the Chores4Kids card (synced across users/devices).
   fields:
+    confetti_enabled:
+      required: false
+      description: Enable/disable confetti animation globally (synced across users/devices).
+      example: true
     enable_points:
       required: false
       description: Enable/disable the points feature globally (synced across users/devices).
