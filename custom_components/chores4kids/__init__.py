@@ -61,6 +61,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             skip_approval=call.data.get("skip_approval"),
             categories=call.data.get("categories"),
             fastest_wins=call.data.get("fastest_wins"),
+            schedule_mode=call.data.get("schedule_mode"),
         )
         async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
 
@@ -117,6 +118,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             call.data.get("repeat_days"),
             call.data.get("repeat_child_id"),
             call.data.get("repeat_child_ids"),
+            call.data.get("schedule_mode"),
         )
         async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
 
@@ -176,7 +178,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_register(DOMAIN, "set_task_icon", svc_set_task_icon)
     # Categories
     async def svc_add_category(call: ServiceCall):
-        await store.add_category(call.data["name"])
+        await store.add_category(call.data["name"], call.data.get("color", ""))
         async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
 
     async def svc_rename_category(call: ServiceCall):
@@ -187,9 +189,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await store.delete_category(call.data["category_id"])
         async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
 
+    async def svc_set_category_color(call: ServiceCall):
+        await store.set_category_color(call.data["category_id"], call.data.get("color", ""))
+        async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
+
     hass.services.async_register(DOMAIN, "add_category", svc_add_category)
     hass.services.async_register(DOMAIN, "rename_category", svc_rename_category)
     hass.services.async_register(DOMAIN, "delete_category", svc_delete_category)
+    hass.services.async_register(DOMAIN, "set_category_color", svc_set_category_color)
     # Shop
     hass.services.async_register(DOMAIN, "add_shop_item", svc_add_shop_item)
     hass.services.async_register(DOMAIN, "update_shop_item", svc_update_shop_item)
@@ -253,6 +260,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             kid_task_points_size=call.data.get("kid_task_points_size"),
             kid_task_button_size=call.data.get("kid_task_button_size"),
             enable_points=call.data.get("enable_points"),
+            confetti_enabled=call.data.get("confetti_enabled"),
         )
         async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
 
