@@ -37,6 +37,8 @@ class Child:
 class Category:
     id: str
     name: str
+    # Optional hex color (e.g. "#ff0000") used for UI chips. Empty means "no custom color".
+    color: str = ""
 
 @dataclass
 class Task:
@@ -52,6 +54,11 @@ class Task:
     icon: str = ""
     # Weekly repetition: 0=Mon .. 6=Sun (local time). If set, a fresh task is auto-created and assigned on those days.
     repeat_days: list[int] = field(default_factory=list)
+    # Task scheduling mode for templates (unassigned tasks):
+    # - "" or "repeat": use repeat_days
+    # - "weekly": every Monday (repeat_days is forced to [0] for due calculations)
+    # - "monthly": every 1st of the month
+    schedule_mode: str = ""
     # If set, this task is an instance spawned from the unassigned repeat template task with this id.
     repeat_template_id: Optional[str] = None
     # Backwards compat: previous versions supported only a single child
@@ -103,6 +110,7 @@ class KidsChoresStore:
         # Global UI settings (shared across users/devices via HA storage)
         self.ui_colors: Dict[str, str] = {}
         self.enable_points: bool = True
+        self.confetti_enabled: bool = True
 
     async def async_load(self):
         data = await self._store.async_load()
@@ -139,6 +147,11 @@ class KidsChoresStore:
         except Exception:
             self.enable_points = True
 
+        try:
+            self.confetti_enabled = bool(data.get("confetti_enabled", True))
+        except Exception:
+            self.confetti_enabled = True
+
     async def async_save(self):
         await self._store.async_save({
             "version": STORAGE_VERSION,
@@ -149,6 +162,7 @@ class KidsChoresStore:
             "purchases": [asdict(p) for p in self.purchases],
             "ui_colors": dict(self.ui_colors or {}),
             "enable_points": bool(getattr(self, "enable_points", True)),
+            "confetti_enabled": bool(getattr(self, "confetti_enabled", True)),
         })
 
     async def set_ui_colors(
@@ -165,6 +179,7 @@ class KidsChoresStore:
         kid_task_points_size: Optional[str] = None,
         kid_task_button_size: Optional[str] = None,
         enable_points: Optional[bool] = None,
+        confetti_enabled: Optional[bool] = None,
     ) -> Dict[str, str]:
         """Set global UI colors. Empty string clears a value."""
         def _set(key: str, value: Optional[str]):
@@ -193,6 +208,9 @@ class KidsChoresStore:
 
         if enable_points is not None:
             self.enable_points = bool(enable_points)
+
+        if confetti_enabled is not None:
+            self.confetti_enabled = bool(confetti_enabled)
         await self.async_save()
         return dict(self.ui_colors)
 
@@ -243,6 +261,7 @@ class KidsChoresStore:
         early_bonus_points: Optional[int] = None,
         fastest_wins: Optional[bool] = None,
         fastest_wins_template_id: Optional[str] = None,
+        schedule_mode: Optional[str] = None,
     ) -> Task:
         tid = str(uuid4())
         # normalize repeat days to list[int]
@@ -306,8 +325,22 @@ class KidsChoresStore:
             self._get_child(assigned_to)
             t.assigned_to = assigned_to
             t.status = STATUS_ASSIGNED
-        # optional repeat config
-        t.repeat_days = _norm_days(repeat_days)
+        # scheduling mode
+        try:
+            mode = str(schedule_mode or "").strip().lower()
+        except Exception:
+            mode = ""
+        if mode not in ("", "repeat", "weekly", "monthly"):
+            mode = ""
+        t.schedule_mode = mode
+
+        # optional schedule/repeat config
+        if t.schedule_mode == "weekly":
+            t.repeat_days = [0]
+        elif t.schedule_mode == "monthly":
+            t.repeat_days = []
+        else:
+            t.repeat_days = _norm_days(repeat_days)
         # Support multiple repeat children (and legacy single field)
         ids: list[str] = []
         try:
@@ -331,6 +364,14 @@ class KidsChoresStore:
             except Exception:
                 pass
         t.repeat_child_ids = ids
+
+        # Enforce mutual exclusion: weekly/monthly templates cannot carry unfinished.
+        try:
+            is_template = not (getattr(t, "assigned_to", None) and str(getattr(t, "assigned_to", "")).strip())
+        except Exception:
+            is_template = False
+        if is_template and t.schedule_mode in ("weekly", "monthly"):
+            t.persist_until_completed = False
         # categories (validate against known list, ignore unknown)
         try:
             cat_ids: list[str] = []
@@ -405,6 +446,29 @@ class KidsChoresStore:
         except Exception:
             return None
 
+    def _next_monthly_due_iso(self, base_date, include_today: bool = True) -> Optional[str]:
+        try:
+            from datetime import date, timedelta
+
+            if not isinstance(base_date, date):
+                return None
+
+            # base_date is a date (local). We return ISO date string for next 1st.
+            if include_today and base_date.day == 1:
+                return base_date.isoformat()
+
+            year = int(base_date.year)
+            month = int(base_date.month)
+            # Jump to first of next month
+            if month == 12:
+                year += 1
+                month = 1
+            else:
+                month += 1
+            return date(year, month, 1).isoformat()
+        except Exception:
+            return None
+
     async def _maybe_spawn_repeat_bonus_instances(self, template: Task):
         """For repeat templates with early-bonus enabled, ensure each target child has one upcoming instance.
 
@@ -413,7 +477,15 @@ class KidsChoresStore:
         # Only for unassigned templates
         if template.assigned_to:
             return
-        if not getattr(template, "repeat_days", None):
+        # Determine schedule for template
+        try:
+            mode = str(getattr(template, "schedule_mode", "") or "").strip().lower()
+        except Exception:
+            mode = ""
+
+        # Backwards compat: if mode is empty but repeat_days exists, treat as repeat.
+        has_repeat_days = bool(getattr(template, "repeat_days", None))
+        if mode in ("", "repeat") and not has_repeat_days:
             return
         if not self._repeat_bonus_active(template):
             return
@@ -424,7 +496,14 @@ class KidsChoresStore:
         from homeassistant.util import dt as dt_util
         from datetime import datetime, timezone
         today = dt_util.now().date()  # local
-        due_iso = self._next_repeat_due_iso(today, list(template.repeat_days), include_today=True)
+        if mode == "monthly":
+            due_iso = self._next_monthly_due_iso(today, include_today=True)
+        else:
+            # repeat + weekly both use repeat-days based next occurrence
+            rdays = list(getattr(template, "repeat_days", []) or [])
+            if mode == "weekly":
+                rdays = [0]
+            due_iso = self._next_repeat_due_iso(today, rdays, include_today=True)
         if not due_iso:
             return
 
@@ -467,8 +546,12 @@ class KidsChoresStore:
             # Keep the original in the unassigned list so it can be reused
             repeat_template_id: Optional[str] = None
             try:
-                if getattr(t, "repeat_days", None):
-                    # If the template is a repeat-plan task, link the spawned copy back to the template
+                mode = str(getattr(t, "schedule_mode", "") or "").strip().lower()
+            except Exception:
+                mode = ""
+            try:
+                if mode in ("weekly", "monthly", "repeat") or getattr(t, "repeat_days", None):
+                    # If the template is scheduled, link spawned copy back to the template
                     # so updates to the template can be propagated to active assigned instances.
                     repeat_template_id = t.id
             except Exception:
@@ -490,6 +573,7 @@ class KidsChoresStore:
                 early_bonus_points=getattr(t, "early_bonus_points", 0),
                 fastest_wins=bool(getattr(t, "fastest_wins", False)),
                 fastest_wins_template_id=(t.id if bool(getattr(t, "fastest_wins", False)) else None),
+                schedule_mode=getattr(t, "schedule_mode", None),
             )
             # add_task persists; nothing else to do
             return
@@ -763,8 +847,19 @@ class KidsChoresStore:
         repeat_days: Optional[list[int] | list[str]] = None,
         repeat_child_id: Optional[str] = None,
         repeat_child_ids: Optional[list[str]] = None,
+        schedule_mode: Optional[str] = None,
     ):
         t = self._get_task(task_id)
+
+        # Normalize schedule mode
+        if schedule_mode is not None:
+            try:
+                mode = str(schedule_mode or "").strip().lower()
+            except Exception:
+                mode = ""
+            if mode not in ("", "repeat", "weekly", "monthly"):
+                mode = ""
+            t.schedule_mode = mode
 
         def _norm_days(days):
             if not days:
@@ -781,7 +876,17 @@ class KidsChoresStore:
                         out.append(key[dd])
             return sorted(set(out))
 
-        t.repeat_days = _norm_days(repeat_days)
+        # weekly/monthly override repeat_days
+        try:
+            mode = str(getattr(t, "schedule_mode", "") or "").strip().lower()
+        except Exception:
+            mode = ""
+        if mode == "weekly":
+            t.repeat_days = [0]
+        elif mode == "monthly":
+            t.repeat_days = []
+        else:
+            t.repeat_days = _norm_days(repeat_days)
 
         # normalize multi child ids
         ids: list[str] = []
@@ -809,6 +914,14 @@ class KidsChoresStore:
             t.repeat_child_id = None
 
         t.repeat_child_ids = ids
+
+        # Enforce mutual exclusion: weekly/monthly templates cannot carry unfinished.
+        try:
+            is_template = (t.assigned_to is None) or (str(t.assigned_to).strip() == "")
+        except Exception:
+            is_template = False
+        if is_template and mode in ("weekly", "monthly"):
+            t.persist_until_completed = False
 
         # If this is a template and early-bonus repeat is active, ensure instances exist.
         try:
@@ -946,31 +1059,40 @@ class KidsChoresStore:
         today = now.date()
         weekday = now.weekday()  # 0=Mon..6=Sun
 
-        # Capture repeat templates BEFORE cleanup so we don't lose the plan
+        # Capture scheduled templates BEFORE cleanup so we don't lose the plan
         templates = []
         for t in self.tasks:
-            if t.repeat_days:
-                # targets can be multiple children
-                targets = list(getattr(t, "repeat_child_ids", []) or [])
-                if not targets and getattr(t, "repeat_child_id", None):
-                    targets = [t.repeat_child_id]
-                templates.append({
-                    "id": t.id,
-                    "title": t.title,
-                    "points": t.points,
-                    "description": t.description,
-                    "repeat_days": list(t.repeat_days),
-                    "icon": t.icon,
-                    "due": getattr(t, "due", None),
-                    "early_bonus_enabled": getattr(t, "early_bonus_enabled", False),
-                    "early_bonus_days": getattr(t, "early_bonus_days", 0),
-                    "early_bonus_points": getattr(t, "early_bonus_points", 0),
-                    "persist_until_completed": getattr(t, "persist_until_completed", False),
-                    "quick_complete": getattr(t, "quick_complete", False),
-                    "skip_approval": getattr(t, "skip_approval", False),
-                    "categories": list(getattr(t, "categories", []) or []),
-                    "targets": [x for x in targets if x],
-                })
+            try:
+                mode = str(getattr(t, "schedule_mode", "") or "").strip().lower()
+            except Exception:
+                mode = ""
+            # Backwards compat: if no mode but repeat_days exists, treat as repeat.
+            is_scheduled = bool(getattr(t, "repeat_days", None)) or (mode in ("weekly", "monthly", "repeat"))
+            if not is_scheduled:
+                continue
+
+            # targets can be multiple children
+            targets = list(getattr(t, "repeat_child_ids", []) or [])
+            if not targets and getattr(t, "repeat_child_id", None):
+                targets = [t.repeat_child_id]
+            templates.append({
+                "id": t.id,
+                "title": t.title,
+                "points": t.points,
+                "description": t.description,
+                "repeat_days": list(getattr(t, "repeat_days", []) or []),
+                "schedule_mode": mode,
+                "icon": t.icon,
+                "due": getattr(t, "due", None),
+                "early_bonus_enabled": getattr(t, "early_bonus_enabled", False),
+                "early_bonus_days": getattr(t, "early_bonus_days", 0),
+                "early_bonus_points": getattr(t, "early_bonus_points", 0),
+                "persist_until_completed": getattr(t, "persist_until_completed", False),
+                "quick_complete": getattr(t, "quick_complete", False),
+                "skip_approval": getattr(t, "skip_approval", False),
+                "categories": list(getattr(t, "categories", []) or []),
+                "targets": [x for x in targets if x],
+            })
 
         def _local_created_date(task: Task):
             created_raw = getattr(task, "created", None)
@@ -1021,15 +1143,32 @@ class KidsChoresStore:
 
         for tpl in templates:
             rdays = tpl.get("repeat_days") or []
-            if not rdays:
+            try:
+                mode = str(tpl.get("schedule_mode") or "").strip().lower()
+            except Exception:
+                mode = ""
+
+            # Backwards compat: if no mode but repeat_days exists, treat as repeat.
+            if mode in ("", "repeat"):
+                if not rdays:
+                    continue
+            elif mode == "weekly":
+                rdays = [0]
+            elif mode == "monthly":
+                rdays = []
+            else:
+                # unknown -> ignore
                 continue
             targets = tpl.get("targets") or []
 
             is_bonus_repeat = bool(tpl.get("early_bonus_enabled")) and int(tpl.get("early_bonus_days", 0) or 0) > 0 and int(tpl.get("early_bonus_points", 0) or 0) > 0
             if is_bonus_repeat:
-                # Ignore any fixed date in tpl['due']; deadline is the next repeat weekday.
+                # Ignore any fixed date in tpl['due']; deadline is derived from schedule.
                 tpl_id = str(tpl.get("id") or "")
-                due_iso = self._next_repeat_due_iso(today, list(rdays), include_today=True)
+                if mode == "monthly":
+                    due_iso = self._next_monthly_due_iso(today, include_today=True)
+                else:
+                    due_iso = self._next_repeat_due_iso(today, list(rdays), include_today=True)
                 if tpl_id and due_iso:
                     for target in targets:
                         if not target:
@@ -1054,8 +1193,16 @@ class KidsChoresStore:
                         )
                 continue
 
-            # Legacy repeat behavior: create only on the selected weekday.
-            if weekday in rdays:
+            # Scheduled behavior: create on the scheduled boundary.
+            should_spawn = False
+            if mode in ("", "repeat"):
+                should_spawn = weekday in (rdays or [])
+            elif mode == "weekly":
+                should_spawn = weekday == 0
+            elif mode == "monthly":
+                should_spawn = int(today.day) == 1
+
+            if should_spawn:
                 tpl_id = str(tpl.get("id") or "")
                 for target in targets:
                     if not target:
@@ -1083,7 +1230,7 @@ class KidsChoresStore:
                         early_bonus_enabled=tpl.get("early_bonus_enabled"),
                         early_bonus_days=tpl.get("early_bonus_days"),
                         early_bonus_points=tpl.get("early_bonus_points"),
-                        persist_until_completed=tpl.get("persist_until_completed", False),
+                        persist_until_completed=(tpl.get("persist_until_completed", False) if mode in ("", "repeat") else False),
                         quick_complete=tpl.get("quick_complete", False),
                         skip_approval=tpl.get("skip_approval", False),
                         categories=list(tpl.get("categories") or [])
@@ -1222,9 +1369,9 @@ class KidsChoresStore:
         raise ValueError("category_not_found")
 
     # --- Categories ---
-    async def add_category(self, name: str) -> Category:
+    async def add_category(self, name: str, color: str = "") -> Category:
         cid = str(uuid4())
-        cat = Category(id=cid, name=str(name).strip())
+        cat = Category(id=cid, name=str(name).strip(), color=self._normalize_hex_color(color))
         self.categories.append(cat)
         await self.async_save()
         return cat
@@ -1232,6 +1379,27 @@ class KidsChoresStore:
     async def rename_category(self, category_id: str, new_name: str) -> Category:
         cat = self._get_category(category_id)
         cat.name = str(new_name).strip()
+        await self.async_save()
+        return cat
+
+    def _normalize_hex_color(self, value: str) -> str:
+        v = str(value or "").strip().lower()
+        if not v:
+            return ""
+        if not v.startswith("#"):
+            v = "#" + v
+        # Expand shorthand #rgb -> #rrggbb
+        m3 = re.fullmatch(r"#([0-9a-f]{3})", v)
+        if m3:
+            r, g, b = m3.group(1)
+            return f"#{r}{r}{g}{g}{b}{b}"
+        if re.fullmatch(r"#[0-9a-f]{6}", v):
+            return v
+        raise ValueError("invalid_color")
+
+    async def set_category_color(self, category_id: str, color: str) -> Category:
+        cat = self._get_category(category_id)
+        cat.color = self._normalize_hex_color(color)
         await self.async_save()
         return cat
 
