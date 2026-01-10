@@ -226,6 +226,7 @@ class Chores4KidsAllTasksSensor(SensorEntity):
             "created": getattr(t, "created", None),
             "icon": getattr(t, "icon", None),
             "repeat_days": t.repeat_days,
+            "schedule_mode": getattr(t, "schedule_mode", ""),
             "repeat_child_id": getattr(t, "repeat_child_id", None),
             "repeat_child_ids": getattr(t, "repeat_child_ids", []),
             "persist_until_completed": getattr(t, "persist_until_completed", False),
@@ -239,7 +240,14 @@ class Chores4KidsAllTasksSensor(SensorEntity):
             "fastest_wins_claimed_by_child_name": getattr(t, "fastest_wins_claimed_by_child_name", None),
             "fastest_wins_claimed_ts": getattr(t, "fastest_wins_claimed_ts", None),
         } for t in self._store.tasks]
-        categories = [{"id": cat.id, "name": cat.name} for cat in getattr(self._store, "categories", [])]
+        categories = [
+            {
+                "id": cat.id,
+                "name": cat.name,
+                "color": getattr(cat, "color", ""),
+            }
+            for cat in getattr(self._store, "categories", [])
+        ]
         return {"tasks": tasks, "categories": categories}
 
 
@@ -270,6 +278,7 @@ class Chores4KidsUiSensor(SensorEntity):
         # expose explicit keys for stable frontend lookup
         return {
             "enable_points": bool(getattr(self._store, "enable_points", True)),
+            "confetti_enabled": bool(getattr(self._store, "confetti_enabled", True)),
             "start_task_bg": colors.get("start_task_bg", ""),
             "complete_task_bg": colors.get("complete_task_bg", ""),
             "kid_points_bg": colors.get("kid_points_bg", ""),
