@@ -173,6 +173,8 @@ class KidsChoresStore:
         start_task_text: Optional[str] = None,
         complete_task_text: Optional[str] = None,
         kid_points_text: Optional[str] = None,
+        task_done_bg: Optional[str] = None,
+        task_done_text: Optional[str] = None,
         task_points_bg: Optional[str] = None,
         task_points_text: Optional[str] = None,
         kid_task_title_size: Optional[str] = None,
@@ -198,6 +200,8 @@ class KidsChoresStore:
         _set("start_task_text", start_task_text)
         _set("complete_task_text", complete_task_text)
         _set("kid_points_text", kid_points_text)
+        _set("task_done_bg", task_done_bg)
+        _set("task_done_text", task_done_text)
         _set("task_points_bg", task_points_bg)
         _set("task_points_text", task_points_text)
 
