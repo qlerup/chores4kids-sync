@@ -10,8 +10,12 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.util import dt as dt_util
 
+import logging
+
 from .const import DOMAIN, SIGNAL_CHILDREN_UPDATED, SIGNAL_DATA_UPDATED
 from .storage import KidsChoresStore
+
+_LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 
@@ -230,6 +234,83 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.services.async_register(DOMAIN, 'upload_shop_image', svc_upload_shop_image)
 
+    async def svc_delete_uploaded_file(call: ServiceCall):
+        """Delete a previously uploaded file from /config/www/chores4kids.
+
+        Safety: only allows deleting a single filename (no paths) after sanitization.
+        """
+        import os, re
+        rel_dir = hass.config.path('www', 'chores4kids')
+        os.makedirs(rel_dir, exist_ok=True)
+        filename = call.data.get('filename') or ''
+        filename = re.sub(r'[^a-zA-Z0-9._-]+', '_', filename)
+        if not filename or '/' in filename or '\\' in filename or filename.startswith('.'):
+            raise ValueError('invalid_filename')
+        path = os.path.join(rel_dir, filename)
+
+        def _remove():
+            if not os.path.exists(path):
+                return False
+            try:
+                os.remove(path)
+                return True
+            except Exception as ex:
+                # surface error to caller
+                raise ex
+
+        try:
+            removed = await hass.async_add_executor_job(_remove)
+            _LOGGER.info("delete_uploaded_file: filename=%s removed=%s", filename, removed)
+        except Exception as ex:
+            _LOGGER.exception("delete_uploaded_file failed for %s", filename)
+            raise ValueError('delete_failed') from ex
+        async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
+
+    hass.services.async_register(DOMAIN, 'delete_uploaded_file', svc_delete_uploaded_file)
+
+    async def svc_delete_completion_sound(call: ServiceCall):
+        """Delete completion sound files from /config/www/chores4kids.
+
+        Deletes legacy and current filenames like:
+        - completion.mp3 / completion.wav / completion.ogg / completion.m4a / completion.aac
+        - completion_<timestamp>.<ext>
+        """
+        import os, re
+        rel_dir = hass.config.path('www', 'chores4kids')
+        os.makedirs(rel_dir, exist_ok=True)
+        pattern = re.compile(r'^completion(_\d+)?\.(mp3|wav|ogg|m4a|aac)$', re.IGNORECASE)
+
+        def _remove_all():
+            matched = 0
+            removed = 0
+            errors: list[str] = []
+            for name in os.listdir(rel_dir):
+                if not pattern.match(name):
+                    continue
+                matched += 1
+                try:
+                    os.remove(os.path.join(rel_dir, name))
+                    removed += 1
+                except Exception as ex:
+                    errors.append(f"{name}: {type(ex).__name__}")
+            return matched, removed, errors
+
+        try:
+            matched, removed, errors = await hass.async_add_executor_job(_remove_all)
+            _LOGGER.info(
+                "delete_completion_sound: matched=%s removed=%s errors=%s", matched, removed, errors
+            )
+            if matched > 0 and removed == 0:
+                raise ValueError('delete_failed')
+        except FileNotFoundError:
+            _LOGGER.info("delete_completion_sound: directory missing")
+        except Exception as ex:
+            _LOGGER.exception("delete_completion_sound failed")
+            raise
+        async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
+
+    hass.services.async_register(DOMAIN, 'delete_completion_sound', svc_delete_completion_sound)
+
     async def svc_debug_mark_overdue(call: ServiceCall):
         """DEBUG: Manually mark a task as overdue for testing."""
         task_id = call.data["task_id"]
@@ -254,6 +335,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             start_task_text=call.data.get("start_task_text"),
             complete_task_text=call.data.get("complete_task_text"),
             kid_points_text=call.data.get("kid_points_text"),
+            task_done_bg=call.data.get("task_done_bg"),
+            task_done_text=call.data.get("task_done_text"),
             task_points_bg=call.data.get("task_points_bg"),
             task_points_text=call.data.get("task_points_text"),
             kid_task_title_size=call.data.get("kid_task_title_size"),
