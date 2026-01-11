@@ -257,6 +257,15 @@ set_ui_colors:
       required: false
       description: Text color for the points pill in kid view (CSS color, e.g. #1E88E5).
       example: "#1E88E5"
+
+    task_done_bg:
+      required: false
+      description: Background color for the "Task done" (one-tap completion) button in kid view.
+      example: "#43A047"
+    task_done_text:
+      required: false
+      description: Text color for the "Task done" (one-tap completion) button in kid view.
+      example: "#FFFFFF"
     task_points_bg:
       required: false
       description: Background color for the task points bubble/chip (CSS color, e.g. rgba(255,255,255,.12)).
@@ -278,3 +287,16 @@ set_ui_colors:
       required: false
       description: Font size for the task action buttons in kid view (CSS size, e.g. 16px). Empty clears.
       example: "16px"
+
+delete_uploaded_file:
+  name: Delete uploaded file
+  description: Delete a file previously uploaded into /config/www/chores4kids (e.g. completion sound).
+  fields:
+    filename:
+      required: true
+      description: Filename only (no paths), e.g. completion.mp3
+      example: "completion.mp3"
+
+delete_completion_sound:
+  name: Delete completion sound
+  description: Deletes completion sound files in /config/www/chores4kids (completion.* and legacy completion_<timestamp>.*).
