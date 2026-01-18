@@ -1,6 +1,7 @@
 # Chores4Kids — Home Assistant Integration (Sync Engine) 🧹👧👦
 
-[![hacs\_badge](https://img.shields.io/badge/HACS-Default-blue.svg)](https://hacs.xyz)
+[![hacs\_badge](https://img.shields.io/badge/HACS-Default-blue.svg)](https://hacs.xyz) [![Downloads](https://img.shields.io/github/downloads/qlerup/chores4kids-sync/total)](https://github.com/qlerup/chores4kids-sync/releases)
+
 
 If you find this project useful, you can support me on Ko-fi 💙  
 
