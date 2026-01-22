@@ -215,6 +215,7 @@ class Chores4KidsAllTasksSensor(SensorEntity):
             "title": t.title,
             "points": t.points,
             "status": t.status,
+            "description": getattr(t, "description", "") or "",
             "due": t.due,
             "repeat_template_id": getattr(t, "repeat_template_id", None),
             "early_bonus_enabled": getattr(t, "early_bonus_enabled", False),
