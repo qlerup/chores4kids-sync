@@ -98,6 +98,9 @@ class Task:
     # For non-winning siblings, this represents when the task was "lost/taken".
     fastest_wins_claimed_ts: Optional[int] = None
 
+    # If true, unfinished task carried to next day is marked as overdue (red).
+    mark_overdue: bool = True
+
 class KidsChoresStore:
     def __init__(self, hass: HomeAssistant):
         self.hass = hass
@@ -266,6 +269,7 @@ class KidsChoresStore:
         fastest_wins: Optional[bool] = None,
         fastest_wins_template_id: Optional[str] = None,
         schedule_mode: Optional[str] = None,
+        mark_overdue: Optional[bool] = None,
     ) -> Task:
         tid = str(uuid4())
         # normalize repeat days to list[int]
@@ -311,6 +315,8 @@ class KidsChoresStore:
             t.fastest_wins = bool(fastest_wins)
         if fastest_wins_template_id is not None:
             t.fastest_wins_template_id = str(fastest_wins_template_id).strip() or None
+        if mark_overdue is not None:
+            t.mark_overdue = bool(mark_overdue)
         # Backwards compat: if caller sets days+points but doesn't pass explicit toggle, auto-enable.
         if early_bonus_enabled is None:
             try:
@@ -534,6 +540,7 @@ class KidsChoresStore:
                 quick_complete=bool(getattr(template, "quick_complete", False)),
                 skip_approval=bool(getattr(template, "skip_approval", False)),
                 categories=list(getattr(template, "categories", []) or []),
+                mark_overdue=bool(getattr(template, "mark_overdue", True)),
             )
             inst.early_bonus_enabled = bool(getattr(template, "early_bonus_enabled", False))
             inst.early_bonus_days = int(getattr(template, "early_bonus_days", 0) or 0)
@@ -578,6 +585,7 @@ class KidsChoresStore:
                 fastest_wins=bool(getattr(t, "fastest_wins", False)),
                 fastest_wins_template_id=(t.id if bool(getattr(t, "fastest_wins", False)) else None),
                 schedule_mode=getattr(t, "schedule_mode", None),
+                mark_overdue=getattr(t, "mark_overdue", True),
             )
             # add_task persists; nothing else to do
             return
@@ -832,6 +840,7 @@ class KidsChoresStore:
                             quick_complete=bool(getattr(template, "quick_complete", False)),
                             skip_approval=bool(getattr(template, "skip_approval", False)),
                             categories=list(getattr(template, "categories", []) or []),
+                            mark_overdue=bool(getattr(template, "mark_overdue", True)),
                         )
                         inst.early_bonus_enabled = bool(getattr(template, "early_bonus_enabled", False))
                         inst.early_bonus_days = int(getattr(template, "early_bonus_days", 0) or 0)
@@ -955,6 +964,7 @@ class KidsChoresStore:
         skip_approval: Optional[bool] = None,
         categories: Optional[list[str]] = None,
         fastest_wins: Optional[bool] = None,
+        mark_overdue: Optional[bool] = None,
     ):
         """Update core editable fields on a task.
 
@@ -1012,6 +1022,8 @@ class KidsChoresStore:
 
         if fastest_wins is not None:
             t.fastest_wins = bool(fastest_wins)
+        if mark_overdue is not None:
+            t.mark_overdue = bool(mark_overdue)
 
         # Keep already spawned repeat instances in sync with the template.
         # This addresses the UX expectation that editing a task under "Tasks" updates the
@@ -1039,6 +1051,7 @@ class KidsChoresStore:
                     inst.persist_until_completed = bool(getattr(t, "persist_until_completed", False))
                     inst.quick_complete = bool(getattr(t, "quick_complete", False))
                     inst.skip_approval = bool(getattr(t, "skip_approval", False))
+                    inst.mark_overdue = bool(getattr(t, "mark_overdue", True))
             except Exception:
                 pass
 
@@ -1096,6 +1109,7 @@ class KidsChoresStore:
                 "skip_approval": getattr(t, "skip_approval", False),
                 "categories": list(getattr(t, "categories", []) or []),
                 "targets": [x for x in targets if x],
+                "mark_overdue": getattr(t, "mark_overdue", True),
             })
 
         def _local_created_date(task: Task):
@@ -1193,7 +1207,8 @@ class KidsChoresStore:
                             persist_until_completed=True,
                             quick_complete=tpl.get("quick_complete", False),
                             skip_approval=tpl.get("skip_approval", False),
-                            categories=list(tpl.get("categories") or [])
+                            categories=list(tpl.get("categories") or []),
+                            mark_overdue=tpl.get("mark_overdue", True),
                         )
                 continue
 
@@ -1237,7 +1252,8 @@ class KidsChoresStore:
                         persist_until_completed=(tpl.get("persist_until_completed", False) if mode in ("", "repeat") else False),
                         quick_complete=tpl.get("quick_complete", False),
                         skip_approval=tpl.get("skip_approval", False),
-                        categories=list(tpl.get("categories") or [])
+                        categories=list(tpl.get("categories") or []),
+                        mark_overdue=tpl.get("mark_overdue", True),
                     )
 
         await self.async_save()
