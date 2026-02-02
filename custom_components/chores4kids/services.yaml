@@ -63,6 +63,11 @@ add_task:
       description: "Scheduling mode for templates: repeat (use repeat_days), weekly (every Monday), monthly (1st of month)"
       example: "weekly"
 
+    mark_overdue:
+      required: false
+      description: "If true, unfinished task carried to next day is marked as overdue (red). Default true."
+      example: true
+
     fastest_wins:
       required: false
       description: "If true, and the task template is assigned to multiple children, the first child to start/complete it will claim it; other children's copies will show who claimed it and cannot be started"
@@ -134,6 +139,11 @@ update_task:
     categories:
       required: false
       description: "List of category ids to set on the task"
+
+    mark_overdue:
+      required: false
+      description: "If true, unfinished task carried to next day is marked as overdue (red)."
+      example: true
 
     fastest_wins:
       required: false

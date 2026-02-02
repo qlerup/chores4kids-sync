@@ -66,6 +66,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             categories=call.data.get("categories"),
             fastest_wins=call.data.get("fastest_wins"),
             schedule_mode=call.data.get("schedule_mode"),
+            mark_overdue=call.data.get("mark_overdue"),
         )
         async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
 
@@ -105,6 +106,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             skip_approval=call.data.get("skip_approval"),
             categories=call.data.get("categories"),
             fastest_wins=call.data.get("fastest_wins"),
+            mark_overdue=call.data.get("mark_overdue"),
         )
         async_dispatcher_send(hass, SIGNAL_DATA_UPDATED)
 
